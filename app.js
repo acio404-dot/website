@@ -80,6 +80,9 @@
     s.students.forEach((x) => { if (!('groupId' in x)) x.groupId = ''; if (!('projectId' in x)) x.projectId = ''; });
     s.teachers.forEach((x) => { if (!('projectId' in x)) x.projectId = ''; });
     if (!Array.isArray(s.settings.sheets)) s.settings.sheets = [];
+    if (s.seedVersion === 2 && s.teachers.length && s.teachers.every((t) => t.payType === 'monthly' && !t.rate && t.notes === 'ставка не указана в таблице')) {
+      s.teachers.forEach((t) => { t.payType = 'perGroup'; t.notes = 'суммы за группы не указаны в таблице — заполните в карточках групп'; });
+    }
     return s;
   }
   function load() {
@@ -134,10 +137,39 @@
     }
     return dateStatus(s.nextDue);
   }
-  const teacherStatus = (t) => dateStatus(t.nextDue);
+  const teacherStatus = (t) => t.payType === 'perGroup'
+    ? (payoutItems().filter((i) => i.teacher.id === t.id && i.amount > 0).map((i) => i.status).sort((a, b) => STATUS_ORDER[a] - STATUS_ORDER[b])[0] || 'ok')
+    : dateStatus(t.nextDue);
   const recurringStatus = (r) => dateStatus(r.nextDue);
   const studentAmount = (s) => Number(s.price) || 0;
-  const teacherAmount = (t) => t.payType === 'perLesson' ? (Number(t.rate) || 0) * (Number(t.lessonsDone) || 0) : Number(t.rate) || 0;
+  const teacherAmount = (t) => t.payType === 'perGroup' ? payoutItems().filter((i) => i.teacher.id === t.id).reduce((a, i) => a + i.amount, 0) : t.payType === 'perLesson' ? (Number(t.rate) || 0) * (Number(t.lessonsDone) || 0) : Number(t.rate) || 0;
+  const TEACHER_PAY_LABEL = { monthly: 'оклад', perLesson: 'за занятие', perGroup: 'за группу / индивидуалку' };
+  // Оплата преподавателю за конкретную группу или индивидуального ученика (схема «за группу»)
+  const getPay = (x, defaultDay) => { if (!x.pay) x.pay = { mode: 'fixed', amount: 0, payDay: defaultDay || 1, nextDue: nextDateForDay(defaultDay || 1), lastPaid: null }; return x.pay; };
+  function payoutAmount(pay, studentIds) {
+    if (pay.mode !== 'percent') return Number(pay.amount) || 0;
+    const since = pay.lastPaid || fmtISO(new Date(Date.now() - 31 * 86400000));
+    const sum = state.payments.filter((p) => p.kind === 'income' && studentIds.includes(p.personId) && p.date > since && p.date <= todayISO()).reduce((a, p) => a + p.amount, 0);
+    return Math.round(sum * (Number(pay.amount) || 0)) / 100;
+  }
+  function payoutItems() {
+    const items = [];
+    const perGroupTeacher = (id) => { const t = teacherById(id); return t && !t.archived && t.payType === 'perGroup' ? t : null; };
+    state.groups.filter((g) => !g.archived && inProject(g)).forEach((g) => {
+      const t = perGroupTeacher(g.teacherId); if (!t) return;
+      const pay = getPay(g, g.payDay);
+      const ids = state.students.filter((x) => x.groupId === g.id && !x.archived).map((x) => x.id);
+      items.push({ id: 'g:' + g.id, kind: 'group', ref: g, pay, teacher: t, name: g.name, amount: payoutAmount(pay, ids), nextDue: pay.nextDue, status: dateStatus(pay.nextDue) });
+    });
+    state.students.filter((x) => !x.archived && !x.groupId && inProject(x)).forEach((x) => {
+      const t = perGroupTeacher(x.teacherId); if (!t) return;
+      const pay = getPay(x, x.payDay);
+      items.push({ id: 's:' + x.id, kind: 'student', ref: x, pay, teacher: t, name: x.name, amount: payoutAmount(pay, [x.id]), nextDue: pay.nextDue, status: dateStatus(pay.nextDue) });
+    });
+    return items.sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || a.nextDue.localeCompare(b.nextDue));
+  }
+  const payoutById = (id) => payoutItems().find((i) => i.id === id);
+  const payoutText = (it) => `${it.pay.mode === 'percent' ? `${it.pay.amount}% от оплат${it.pay.lastPaid ? ' с ' + fmtDate(it.pay.lastPaid) : ' за 31 день'}` : `${money(it.pay.amount)} в месяц`}, ${it.pay.payDay}-го`;
   const STATUS_LABEL = { overdue: 'Просрочено', today: 'Сегодня', soon: 'Скоро', ok: 'В порядке' };
   const STATUS_ORDER = { overdue: 0, today: 1, soon: 2, ok: 3 };
   const needsAction = (st) => st !== 'ok';
@@ -179,6 +211,13 @@
     if (t.payType === 'perLesson') t.lessonsDone = 0;
     t.lastPaid = date;
     save(); render(); toast(`Выплата ${t.name} записана`);
+  }
+  function markPayoutPaid(id, amount, date, note) {
+    const it = payoutById(id); if (!it) return;
+    addPayment({ kind: 'salary', date, amount, personId: it.teacher.id, personName: it.teacher.name, projectId: it.teacher.projectId || it.ref.projectId || '', category: 'Зарплаты', note: [it.kind === 'group' ? `группа ${it.name}` : `индивидуально: ${it.name}`, note].filter(Boolean).join(' · ') });
+    it.pay.nextDue = addMonths(it.pay.nextDue, 1, Number(it.pay.payDay) || undefined); it.pay.lastPaid = date;
+    it.teacher.lastPaid = date;
+    save(); render(); toast(`Выплата ${it.teacher.name} за ${it.name} записана`);
   }
   function markRecurringPaid(id, amount, date, note) {
     const r = byId(state.recurring, id); if (!r) return;
@@ -224,6 +263,18 @@
     if (payDayEl && nextDueEl) payDayEl.addEventListener('change', () => { const v = Number(payDayEl.value); if (v >= 1 && v <= 31) nextDueEl.value = nextDateForDay(v); });
   };
 
+  const payFields = (pay, cls, title) => `
+        <div class="field span-2 ${cls}"><label><strong>${title}</strong></label><div class="small muted">Действует для преподавателей со схемой «за группу / индивидуалку».</div></div>
+        ${field('Как считать', `<select name="pay_mode"><option value="fixed" ${pay.mode !== 'percent' ? 'selected' : ''}>Фиксированная сумма в месяц</option><option value="percent" ${pay.mode === 'percent' ? 'selected' : ''}>Процент от оплат учеников</option></select>`, false, cls)}
+        ${field('Сумма или процент', inp('pay_amount', pay.amount, 'number', 'min="0" step="0.01"'), false, cls)}
+        ${field('День выплаты (число месяца)', inp('pay_payDay', pay.payDay, 'number', 'min="1" max="31"'), false, cls)}
+        ${field('Следующая выплата', inp('pay_nextDue', pay.nextDue, 'date'), false, cls)}`;
+  const readPay = (d, old) => ({ mode: d.pay_mode === 'percent' ? 'percent' : 'fixed', amount: Number(d.pay_amount) || 0, payDay: Math.min(31, Math.max(1, Number(d.pay_payDay) || 1)), nextDue: d.pay_nextDue || nextDateForDay(Number(d.pay_payDay) || 1), lastPaid: (old && old.lastPaid) || null });
+  const bindPayFields = () => {
+    const d = modalForm.querySelector('[name=pay_payDay]'), n = modalForm.querySelector('[name=pay_nextDue]');
+    if (d && n) d.addEventListener('change', () => { const v = Number(d.value); if (v >= 1 && v <= 31) n.value = nextDateForDay(v); });
+  };
+
   function projectForm(p) {
     const isNew = !p; p = p || {};
     openModal(isNew ? 'Новый проект' : 'Проект', `<div class="form-grid">${field('Название', inp('name', p.name, 'text', 'required placeholder="TR-YOS Zone"'), true)}${field('Заметка', inp('notes', p.notes, 'text'), true)}</div>`, (d) => {
@@ -247,14 +298,16 @@
         ${field('День оплаты', inp('payDay', g.payDay, 'number', 'min="1" max="31"'), false, 'only-monthly')}
         ${field('Занятий в абонементе', inp('lessonsInPackage', g.lessonsInPackage, 'number', 'min="1"'), false, 'only-package')}
         ${field('Заметка', inp('notes', g.notes, 'text'), true)}
+        ${payFields(g.pay || { mode: 'fixed', amount: '', payDay: g.payDay || 1, nextDue: nextDateForDay(Number(g.payDay) || 1) }, '', 'Оплата преподавателю за эту группу')}
       </div><p class="form-note">Цена, схема и преподаватель подставляются новым ученикам этой группы; у каждого ученика их можно изменить.</p>`;
     openModal(isNew ? 'Новая группа' : 'Группа', html, (d) => {
-      const obj = { id: g.id || uid(), name: d.name.trim(), projectId: d.projectId || '', teacherId: d.teacherId || '', subject: d.subject.trim(), schedule: d.schedule.trim(), payType: d.payType, price: Number(d.price) || 0, payDay: Math.min(31, Math.max(1, Number(d.payDay) || 1)), lessonsInPackage: Number(d.lessonsInPackage) || 1, notes: d.notes.trim(), archived: !!g.archived };
+      const obj = { id: g.id || uid(), name: d.name.trim(), projectId: d.projectId || '', teacherId: d.teacherId || '', subject: d.subject.trim(), schedule: d.schedule.trim(), payType: d.payType, price: Number(d.price) || 0, payDay: Math.min(31, Math.max(1, Number(d.payDay) || 1)), lessonsInPackage: Number(d.lessonsInPackage) || 1, notes: d.notes.trim(), archived: !!g.archived, pay: readPay(d, g.pay) };
       if (isNew) state.groups.push(obj); else { Object.assign(g, obj); state.students.forEach((s) => { if (s.groupId === g.id) s.projectId = g.projectId; }); }
       save(); closeModal(); render(); toast(isNew ? 'Группа добавлена' : 'Сохранено');
     });
     const sync = () => { const v = modalForm.querySelector('#f-gpayType').value; modalForm.querySelectorAll('.only-monthly').forEach((el) => el.style.display = v === 'monthly' ? '' : 'none'); modalForm.querySelectorAll('.only-package').forEach((el) => el.style.display = v === 'package' ? '' : 'none'); };
     modalForm.querySelector('#f-gpayType').addEventListener('change', sync); sync();
+    bindPayFields();
   }
 
   function studentForm(s, presetGroupId) {
@@ -277,10 +330,12 @@
         ${field('Осталось занятий', inp('lessonsLeft', s.lessonsLeft, 'number', 'min="0"'), false, 'only-package')}
         ${field('Телефон родителя / ученика', inp('phone', s.phone, 'tel', 'placeholder="+90 ..."'))}
         ${field('Заметка', inp('notes', s.notes, 'text', 'placeholder="скидка 10%"'))}
+        ${payFields(s.pay || { mode: 'fixed', amount: '', payDay: s.payDay || 1, nextDue: nextDateForDay(Number(s.payDay) || 1) }, 'only-solo', 'Оплата преподавателю за индивидуальные занятия')}
       </div>`;
     openModal(isNew ? 'Новый ученик' : 'Ученик', html, (d) => {
       const g = groupById(d.groupId);
       const obj = {
+        pay: readPay(d, s.pay),
         id: s.id || uid(), name: d.name.trim(), groupId: d.groupId || '', projectId: g ? g.projectId : (d.projectId || ''), subject: d.subject.trim(), teacherId: d.teacherId || '', payType: d.payType,
         price: Number(d.price) || 0, payDay: Math.min(31, Math.max(1, Number(d.payDay) || 1)),
         nextDue: d.payType === 'monthly' ? (d.nextDue || nextDateForDay(Number(d.payDay) || 1)) : null,
@@ -292,7 +347,10 @@
     });
     const sync = () => { const v = modalForm.querySelector('#f-payType').value; modalForm.querySelectorAll('.only-monthly').forEach((el) => el.style.display = v === 'monthly' ? '' : 'none'); modalForm.querySelectorAll('.only-package').forEach((el) => el.style.display = v === 'package' ? '' : 'none'); };
     modalForm.querySelector('#f-payType').addEventListener('change', sync); sync();
+    const syncSolo = () => { const solo = !modalForm.querySelector('#f-group').value; modalForm.querySelectorAll('.only-solo').forEach((el) => el.style.display = solo ? '' : 'none'); };
+    syncSolo(); bindPayFields();
     modalForm.querySelector('#f-group').addEventListener('change', (e) => {
+      syncSolo();
       const g = groupById(e.target.value); if (!g) return;
       const set = (n, v) => { const el = modalForm.querySelector(`[name=${n}]`); if (el) el.value = v ?? ''; };
       set('projectId', g.projectId); set('teacherId', g.teacherId); set('subject', g.subject); set('payType', g.payType); set('price', g.price); set('payDay', g.payDay); set('nextDue', nextDateForDay(g.payDay)); set('lessonsInPackage', g.lessonsInPackage); if (isNew) set('lessonsLeft', g.lessonsInPackage);
@@ -308,11 +366,12 @@
         ${field('Имя преподавателя', inp('name', t.name, 'text', 'required placeholder="Мария Ивановна"'), true)}
         ${field('Проект', `<select name="projectId">${options(state.projects, t.projectId, '— все проекты —')}</select>`)}
         ${field('Предмет', inp('subject', t.subject, 'text', 'placeholder="Математика"'))}
-        ${field('Схема оплаты', `<select name="payType" id="f-tpayType"><option value="monthly" ${t.payType === 'monthly' ? 'selected' : ''}>Оклад (фикс. в месяц)</option><option value="perLesson" ${t.payType === 'perLesson' ? 'selected' : ''}>За проведённое занятие</option></select>`)}
-        ${field('<span id="f-rate-label">Сумма</span>', inp('rate', t.rate, 'number', 'required min="0" step="0.01"'))}
-        ${field('День выплаты (число месяца)', inp('payDay', t.payDay, 'number', 'min="1" max="31"'))}
-        ${field('Следующая выплата', inp('nextDue', t.nextDue || nextDateForDay(Number(t.payDay) || 5), 'date'))}
+        ${field('Схема оплаты', `<select name="payType" id="f-tpayType"><option value="monthly" ${t.payType === 'monthly' ? 'selected' : ''}>Оклад (фикс. в месяц)</option><option value="perLesson" ${t.payType === 'perLesson' ? 'selected' : ''}>За проведённое занятие</option><option value="perGroup" ${t.payType === 'perGroup' ? 'selected' : ''}>За каждую группу / индивидуалку</option></select>`)}
+        ${field('<span id="f-rate-label">Сумма</span>', inp('rate', t.rate, 'number', 'min="0" step="0.01"'), false, 'only-fixed')}
+        ${field('День выплаты (число месяца)', inp('payDay', t.payDay, 'number', 'min="1" max="31"'), false, 'only-fixed')}
+        ${field('Следующая выплата', inp('nextDue', t.nextDue || nextDateForDay(Number(t.payDay) || 5), 'date'), false, 'only-fixed')}
         ${field('Проведено занятий (не оплачено)', inp('lessonsDone', t.lessonsDone, 'number', 'min="0"'), false, 'only-per')}
+        <div class="field span-2 only-group"><div class="form-note">Сумма (или процент от оплат учеников) и день выплаты задаются отдельно в карточке каждой группы и у каждого индивидуального ученика этого преподавателя. Каждая группа станет отдельной строкой в списке «Выплатить».</div></div>
         ${field('Телефон', inp('phone', t.phone, 'tel'))}
         ${field('Заметка', inp('notes', t.notes, 'text'), true)}
       </div>`;
@@ -321,7 +380,7 @@
       if (isNew) state.teachers.push(obj); else Object.assign(t, obj);
       save(); closeModal(); render(); toast(isNew ? 'Преподаватель добавлен' : 'Сохранено');
     });
-    const sync = () => { const v = modalForm.querySelector('#f-tpayType').value; modalForm.querySelectorAll('.only-per').forEach((el) => el.style.display = v === 'perLesson' ? '' : 'none'); modalForm.querySelector('#f-rate-label').textContent = v === 'perLesson' ? 'Ставка за занятие' : 'Оклад в месяц'; };
+    const sync = () => { const v = modalForm.querySelector('#f-tpayType').value; modalForm.querySelectorAll('.only-per').forEach((el) => el.style.display = v === 'perLesson' ? '' : 'none'); modalForm.querySelectorAll('.only-fixed').forEach((el) => el.style.display = v === 'perGroup' ? 'none' : ''); modalForm.querySelectorAll('.only-group').forEach((el) => el.style.display = v === 'perGroup' ? '' : 'none'); modalForm.querySelector('#f-rate-label').textContent = v === 'perLesson' ? 'Ставка за занятие' : 'Оклад в месяц'; };
     modalForm.querySelector('#f-tpayType').addEventListener('change', sync); sync();
     bindPayDay();
   }
@@ -354,17 +413,19 @@
   const categoriesDatalist = () => `<datalist id="categories">${allCategories().map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`;
 
   function payForm(kind, id) {
-    const p = kind === 'income' ? byId(state.students, id) : kind === 'salary' ? byId(state.teachers, id) : byId(state.recurring, id);
+    const it = kind === 'payout' ? payoutById(id) : null;
+    const p = kind === 'income' ? byId(state.students, id) : kind === 'salary' ? byId(state.teachers, id) : kind === 'payout' ? (it && it.teacher) : byId(state.recurring, id);
     if (!p) return;
-    const amount = kind === 'income' ? studentAmount(p) : kind === 'salary' ? teacherAmount(p) : p.amount;
+    const amount = kind === 'income' ? studentAmount(p) : kind === 'salary' ? teacherAmount(p) : kind === 'payout' ? it.amount : p.amount;
     let note;
     if (kind === 'income') note = p.payType === 'package' ? `После оплаты добавится ${p.lessonsInPackage} ${plural(p.lessonsInPackage, 'занятие', 'занятия', 'занятий')}.` : `Следующая оплата сдвинется на ${fmtDate(addMonths(p.nextDue, 1, p.payDay))}.`;
+    else if (kind === 'payout') note = `${it.kind === 'group' ? 'Группа' : 'Индивидуально'}: ${esc(it.name)} · ${payoutText(it)}. Следующая выплата сдвинется на ${fmtDate(addMonths(it.nextDue, 1, it.pay.payDay))}.`;
     else note = `Следующая выплата сдвинется на ${fmtDate(addMonths(p.nextDue, 1, p.payDay))}.${p.payType === 'perLesson' ? ' Счётчик занятий обнулится.' : ''}`;
     const html = `<div class="form-grid">${field('Сумма', inp('amount', amount, 'number', 'required min="0" step="0.01"'))}${field('Дата', inp('date', todayISO(), 'date', 'required'))}${field('Комментарий', inp('note', '', 'text', 'placeholder="перевод на карту, наличные…"'), true)}</div><p class="form-note">${note}</p>`;
-    const title = kind === 'income' ? `Оплата: ${p.name}` : kind === 'salary' ? `Выплата: ${p.name}` : `Оплата: ${p.name}`;
+    const title = kind === 'income' ? `Оплата: ${p.name}` : kind === 'salary' ? `Выплата: ${p.name}` : kind === 'payout' ? `Выплата: ${p.name} за ${it.name}` : `Оплата: ${p.name}`;
     openModal(title, html, (d) => {
       closeModal();
-      if (kind === 'income') markStudentPaid(id, d.amount, d.date, d.note); else if (kind === 'salary') markTeacherPaid(id, d.amount, d.date, d.note); else markRecurringPaid(id, d.amount, d.date, d.note);
+      if (kind === 'income') markStudentPaid(id, d.amount, d.date, d.note); else if (kind === 'salary') markTeacherPaid(id, d.amount, d.date, d.note); else if (kind === 'payout') markPayoutPaid(id, d.amount, d.date, d.note); else markRecurringPaid(id, d.amount, d.date, d.note);
     }, 'Записать');
   }
 
@@ -461,6 +522,14 @@
       <div class="row-actions"><span class="row-amount">${money(r.amount)}</span><button class="btn sm good" data-act="pay-recurring" data-id="${r.id}">Оплачено</button></div></div>`;
   }
 
+  function payoutRow(it) {
+    return `<div class="row is-${it.status}">
+      <div class="row-main">
+        <div class="row-title">${esc(it.teacher.name)} <span class="badge muted">${it.kind === 'group' ? 'группа' : 'индивидуально'}: ${esc(it.name)}</span> ${badge(it.status)}</div>
+        <div class="row-sub">Выплата ${fmtDate(it.nextDue)} · ${relDays(it.nextDue)} · ${payoutText(it)}</div>
+      </div>
+      <div class="row-actions"><span class="row-amount">${money(it.amount)}</span><button class="btn sm good" data-act="pay-payout" data-id="${it.id}">Выплатить</button></div></div>`;
+  }
   function renderOverview() {
     const students = activeStudents(), teachers = activeTeachers(), recurring = activeRecurring(), groups = activeGroups();
     if (!state.projects.length && !students.length && !teachers.length) {
@@ -477,7 +546,8 @@
     const banner = state.seedVersion !== SEED_VERSION && !(state.settings.sheets || []).length ? `<div class="card banner"><div><strong>Есть новые данные из таблицы Finances</strong><div class="small muted">6 групп, ученики с оплатами за июнь–октябрь, преподаватели, расходы по категориям. Загрузка заменит текущие данные на сайте.</div></div><div class="toolbar"><button class="btn primary" data-act="seed-mine">Загрузить</button><button class="btn" data-act="dismiss-banner">Скрыть</button></div></div>` : '';
     const dueStudents = students.filter((s) => needsAction(studentStatus(s))).sort((a, b) => STATUS_ORDER[studentStatus(a)] - STATUS_ORDER[studentStatus(b)] || (a.nextDue || '').localeCompare(b.nextDue || ''));
     const outs = [
-      ...teachers.filter((t) => teacherAmount(t) > 0 && needsAction(teacherStatus(t))).map((t) => ({ kind: 'salary', st: teacherStatus(t), due: t.nextDue, amount: teacherAmount(t), html: teacherRow(t) })),
+      ...teachers.filter((t) => t.payType !== 'perGroup' && teacherAmount(t) > 0 && needsAction(teacherStatus(t))).map((t) => ({ kind: 'salary', st: teacherStatus(t), due: t.nextDue, amount: teacherAmount(t), html: teacherRow(t) })),
+      ...payoutItems().filter((it) => it.amount > 0 && needsAction(it.status)).map((it) => ({ kind: 'salary', st: it.status, due: it.nextDue, amount: it.amount, html: payoutRow(it) })),
       ...recurring.filter((r) => needsAction(recurringStatus(r))).map((r) => ({ kind: 'expense', st: recurringStatus(r), due: r.nextDue, amount: r.amount, html: recurringRow(r) })),
     ].sort((a, b) => STATUS_ORDER[a.st] - STATUS_ORDER[b.st] || a.due.localeCompare(b.due));
     const collect = dueStudents.reduce((a, s) => a + studentAmount(s), 0);
@@ -492,7 +562,8 @@
     for (let i = 0; i <= 7; i++) {
       const iso = fmtISO(new Date(Date.now() + i * 86400000));
       students.filter((s) => s.payType === 'monthly' && s.nextDue === iso).forEach((s) => upcoming.push({ iso, kind: 'in', name: s.name, amount: studentAmount(s) }));
-      teachers.filter((t) => t.nextDue === iso && teacherAmount(t) > 0).forEach((t) => upcoming.push({ iso, kind: 'out', name: t.name, amount: teacherAmount(t) }));
+      teachers.filter((t) => t.payType !== 'perGroup' && t.nextDue === iso && teacherAmount(t) > 0).forEach((t) => upcoming.push({ iso, kind: 'out', name: t.name, amount: teacherAmount(t) }));
+      payoutItems().filter((it) => it.nextDue === iso && it.amount > 0).forEach((it) => upcoming.push({ iso, kind: 'out', name: `${it.teacher.name} · ${it.name}`, amount: it.amount }));
       recurring.filter((r) => r.nextDue === iso).forEach((r) => upcoming.push({ iso, kind: 'out', name: r.name, amount: r.amount }));
     }
     const groupRows = groups.map((g) => {
@@ -648,6 +719,7 @@
           <div><div class="label">Цена</div><div class="v">${money(g.price)}<span class="small muted"> / ${g.payType === 'package' ? `${g.lessonsInPackage} зан.` : 'мес'}</span></div></div>
           <div><div class="label">Ожидаемый доход</div><div class="v">${money(expected)}</div></div>
         </div>
+        ${t && t.payType === 'perGroup' ? (() => { const it = payoutItems().find((x) => x.id === 'g:' + g.id); return it ? (it.amount > 0 ? `<div class="teacher-pay">Преподавателю: <strong>${money(it.amount)}</strong> · ${payoutText(it)} · ${fmtDate(it.nextDue)} ${badge(it.status)} <button class="btn sm good" data-act="pay-payout" data-id="${it.id}">Выплатить</button></div>` : `<div class="teacher-pay">Преподавателю: <span class="muted">сумма не задана</span> <button class="btn sm" data-act="edit-group" data-id="${g.id}">✎ задать</button></div>`) : ''; })() : ''}
         ${gs.length ? `<div class="chips">${gs.map((s) => { const st = studentStatus(s); return `<button class="chip ${st}" data-act="pay-student" data-id="${s.id}" title="${esc(studentDueText(s))} — нажмите, чтобы записать оплату">${esc(s.name)}<span class="chip-st">${st === 'ok' ? '✓' : st === 'overdue' ? '!' : '•'}</span></button>`; }).join('')}</div>` : `<div class="small muted">В группе пока нет учеников.</div>`}
       </section>`;
     }).join('');
@@ -709,12 +781,12 @@
         ${list.map((t) => { const st = teacherStatus(t); const gs = state.groups.filter((g) => g.teacherId === t.id && !g.archived); const n = state.students.filter((s) => s.teacherId === t.id && !s.archived).length; return `<tr>
           <td data-l="Преподаватель"><div><strong>${esc(t.name)}</strong></div><div class="sub">${[t.subject, multiProject() && t.projectId ? projectName(t.projectId) : null, t.notes].filter(Boolean).map(esc).join(' · ')}</div></td>
           <td data-l="Статус"><div>${badge(st)}</div></td>
-          <td data-l="Выплата"><div>${fmtDate(t.nextDue)} <span class="sub">${relDays(t.nextDue)}</span></div><div class="sub">${t.payType === 'perLesson' ? `${money(t.rate)} за занятие, выплата ${t.payDay}-го` : `оклад ${money(t.rate)}, ${t.payDay}-го`}${t.lastPaid ? ` · последняя ${fmtDate(t.lastPaid)}` : ''}</div></td>
+          <td data-l="Выплата">${t.payType === 'perGroup' ? (() => { const its = payoutItems().filter((x) => x.teacher.id === t.id); return its.length ? `<div class="payout-list">${its.map((it) => `<div class="payout-item ${it.status}"><span class="badge ${it.status}">${fmtDate(it.nextDue)}</span> <span>${esc(it.name)}</span> <span class="sub">${it.amount > 0 ? money(it.amount) : 'сумма не задана'}</span> ${it.amount > 0 && !t.archived ? `<button class="btn sm good" data-act="pay-payout" data-id="${it.id}">Выплатить</button>` : `<button class="btn sm" data-act="${it.kind === 'group' ? 'edit-group' : 'edit-student'}" data-id="${it.ref.id}" title="Задать сумму">✎ сумма</button>`}</div>`).join('')}</div>` : '<div class="muted">нет групп и индивидуальных учеников</div>'; })() + `<div class="sub">за каждую группу / индивидуалку${t.lastPaid ? ` · последняя ${fmtDate(t.lastPaid)}` : ''}</div>` : `<div>${fmtDate(t.nextDue)} <span class="sub">${relDays(t.nextDue)}</span></div><div class="sub">${t.payType === 'perLesson' ? `${money(t.rate)} за занятие, выплата ${t.payDay}-го` : `оклад ${money(t.rate)}, ${t.payDay}-го`}${t.lastPaid ? ` · последняя ${fmtDate(t.lastPaid)}` : ''}</div>`}</td>
           <td data-l="Группы"><div>${gs.length ? gs.map((g) => esc(g.name)).join(', ') : '<span class="muted">—</span>'}</div><div class="sub">${n} ${plural(n, 'ученик', 'ученика', 'учеников')}</div></td>
-          <td class="num" data-l="К выплате"><div>${money(teacherAmount(t))}</div>${t.payType === 'perLesson' ? `<div class="sub">${t.lessonsDone || 0} ${plural(t.lessonsDone || 0, 'занятие', 'занятия', 'занятий')}</div>` : ''}</td>
+          <td class="num" data-l="К выплате"><div>${money(teacherAmount(t))}</div>${t.payType === 'perLesson' ? `<div class="sub">${t.lessonsDone || 0} ${plural(t.lessonsDone || 0, 'занятие', 'занятия', 'занятий')}</div>` : t.payType === 'perGroup' ? `<div class="sub">${payoutItems().filter((x) => x.teacher.id === t.id).length} ${plural(payoutItems().filter((x) => x.teacher.id === t.id).length, 'выплата', 'выплаты', 'выплат')} в месяц</div>` : ''}</td>
           <td class="actions"><div class="row-actions">
             ${t.payType === 'perLesson' && !t.archived ? `<button class="btn sm" data-act="teacher-lesson-minus" data-id="${t.id}">−</button><button class="btn sm" data-act="teacher-lesson-plus" data-id="${t.id}" title="Проведено занятие">+1 занятие</button>` : ''}
-            ${!t.archived ? `<button class="btn sm good" data-act="pay-teacher" data-id="${t.id}">Выплатить</button>` : ''}
+            ${!t.archived && t.payType !== 'perGroup' ? `<button class="btn sm good" data-act="pay-teacher" data-id="${t.id}">Выплатить</button>` : ''}
             <button class="btn sm" data-act="edit-teacher" data-id="${t.id}">✎</button>
             <button class="btn sm" data-act="archive-teacher" data-id="${t.id}" title="${t.archived ? 'Вернуть из архива' : 'В архив'}">${t.archived ? '↩' : '🗄'}</button>
           </div></td></tr>`; }).join('')}
@@ -796,7 +868,8 @@
     const events = {};
     const push = (iso, ev) => { (events[iso] = events[iso] || []).push(ev); };
     activeStudents().forEach((s) => { if (s.payType === 'monthly' && s.nextDue) push(s.nextDue, { kind: 'in', act: 'pay-student', name: s.name, amount: studentAmount(s), late: s.nextDue < today, id: s.id, label: 'оплата от ученика' }); });
-    activeTeachers().forEach((t) => { if (t.nextDue && teacherAmount(t) > 0) push(t.nextDue, { kind: 'out', act: 'pay-teacher', name: t.name, amount: teacherAmount(t), late: t.nextDue < today, id: t.id, label: 'зарплата' }); });
+    activeTeachers().forEach((t) => { if (t.payType !== 'perGroup' && t.nextDue && teacherAmount(t) > 0) push(t.nextDue, { kind: 'out', act: 'pay-teacher', name: t.name, amount: teacherAmount(t), late: t.nextDue < today, id: t.id, label: 'зарплата' }); });
+    payoutItems().forEach((it) => { if (it.amount > 0) push(it.nextDue, { kind: 'out', act: 'pay-payout', name: `${it.teacher.name} · ${it.name}`, amount: it.amount, late: it.nextDue < today, id: it.id, label: it.kind === 'group' ? 'зарплата за группу' : 'зарплата за индивидуалку' }); });
     activeRecurring().forEach((r) => { if (r.nextDue) push(r.nextDue, { kind: 'out', act: 'pay-recurring', name: r.name, amount: r.amount, late: r.nextDue < today, id: r.id, label: 'подписка' }); });
     const monthPrefix = `${y}-${pad(m + 1)}`;
     const lateOutside = Object.entries(events).filter(([iso]) => iso < today && !iso.startsWith(monthPrefix)).flatMap(([iso, evs]) => evs.map((e) => ({ ...e, iso })));
@@ -816,7 +889,7 @@
       cells += `<button class="cal-day ${other ? 'other' : ''} ${iso === today ? 'today' : ''} ${ui.calSelected === iso ? 'selected' : ''}" data-day="${iso}"><span class="d">${d.getDate()}</span>${chips}${more}${dots}</button>`;
     }
     const evRow = (e, iso) => `<div class="row ${e.late ? 'is-overdue' : ''}"><div class="row-main"><div class="row-title">${esc(e.name)} <span class="badge muted">${e.label}</span>${e.late ? ' ' + badge('overdue') : ''}</div>${iso ? `<div class="row-sub">${fmtDate(iso)} · ${relDays(iso)}</div>` : ''}</div>
-      <div class="row-actions"><span class="row-amount">${e.kind === 'in' ? '+' : '−'}${money(e.amount)}</span><button class="btn sm good" data-act="${e.act}" data-id="${e.id}">${e.kind === 'in' ? 'Оплатил' : e.act === 'pay-teacher' ? 'Выплатить' : 'Оплачено'}</button></div></div>`;
+      <div class="row-actions"><span class="row-amount">${e.kind === 'in' ? '+' : '−'}${money(e.amount)}</span><button class="btn sm good" data-act="${e.act}" data-id="${e.id}">${e.kind === 'in' ? 'Оплатил' : e.act === 'pay-teacher' || e.act === 'pay-payout' ? 'Выплатить' : 'Оплачено'}</button></div></div>`;
     const sel = ui.calSelected && events[ui.calSelected] ? ui.calSelected : null;
     return `
       <div class="page-head"><h1>Календарь</h1>
@@ -931,9 +1004,9 @@
     const Y = '2026';
     const theme = state.settings.theme;
     const projects = [{ id: 'p-tr', name: 'TR-YOS Zone', notes: '' }];
-    const T = (id, name) => ({ id, name, projectId: 'p-tr', subject: 'TR-YOS', payType: 'monthly', rate: 0, payDay: 1, nextDue: `${Y}-11-01`, lessonsDone: 0, phone: '', notes: 'ставка не указана в таблице', lastPaid: null, archived: false });
+    const T = (id, name) => ({ id, name, projectId: 'p-tr', subject: 'TR-YOS', payType: 'perGroup', rate: 0, payDay: 1, nextDue: `${Y}-11-01`, lessonsDone: 0, phone: '', notes: 'суммы за группы не указаны в таблице — заполните в карточках групп', lastPaid: null, archived: false });
     const teachers = [T('t-asilbek', 'Asilbek'), T('t-elvira', 'Elvira'), T('t-regina', 'Regina'), T('t-diyora', 'Diyora')];
-    const G = (id, name, payDay, teacherId, price) => ({ id, name, projectId: 'p-tr', teacherId, subject: 'TR-YOS', schedule: '', payType: 'monthly', price, payDay, lessonsInPackage: 8, notes: `оплата ${payDay}-го числа`, archived: false });
+    const G = (id, name, payDay, teacherId, price) => ({ id, name, projectId: 'p-tr', teacherId, subject: 'TR-YOS', schedule: '', payType: 'monthly', price, payDay, lessonsInPackage: 8, notes: `оплата ${payDay}-го числа`, archived: false, pay: { mode: 'fixed', amount: 0, payDay, nextDue: nextDateForDay(payDay), lastPaid: null } });
     const groups = [G('g-1', 'Group #1', 15, 't-asilbek', 104), G('g-j1', 'Group J1', 7, 't-elvira', 150), G('g-j2', 'Group J2', 15, 't-regina', 150), G('g-s1', 'Group S1', 8, 't-elvira', 150), G('g-o1', 'Group O1', 1, 't-regina', 240), G('g-o2', 'Group O2', 18, '', 0)];
     // [имя, группа|null, преподаватель, цена, оплаты {месяц: сумма}, следующая оплата, заметка, архив]
     const S = [
@@ -966,7 +1039,7 @@
       const id = `s-${i + 1}`;
       const dates = Object.keys(pays).map(Number).sort((a, b) => a - b);
       const last = dates.length ? dates[dates.length - 1] : null;
-      students.push({ id, name, groupId: groupId || '', projectId: 'p-tr', teacherId, subject: name === 'Firdaus' ? 'TOEFL + Английский' : 'TR-YOS', payType: 'monthly', price, payDay, nextDue: `${Y}-${next}`, lessonsInPackage: 8, lessonsLeft: 0, phone: '', notes: notes || '', lastPaid: last ? `${Y}-${pad(last)}-${pad(payDay)}` : null, remindedAt: null, archived: !!archived });
+      students.push({ id, name, groupId: groupId || '', projectId: 'p-tr', teacherId, subject: name === 'Firdaus' ? 'TOEFL + Английский' : 'TR-YOS', payType: 'monthly', price, payDay, nextDue: `${Y}-${next}`, lessonsInPackage: 8, lessonsLeft: 0, phone: '', notes: notes || '', lastPaid: last ? `${Y}-${pad(last)}-${pad(payDay)}` : null, remindedAt: null, archived: !!archived, pay: groupId ? undefined : { mode: 'fixed', amount: 0, payDay: 1, nextDue: nextDateForDay(1), lastPaid: null } });
       dates.forEach((mo) => {
         const v = pays[mo]; const amount = Array.isArray(v) ? v[0] : v; const gid = Array.isArray(v) ? v[1] : groupId;
         const gg = groups.find((x) => x.id === gid);
@@ -1358,6 +1431,7 @@
       case 'add-expense': manualPaymentForm({ kind: 'expense', projectId: btn.dataset.project || '', category: btn.dataset.cat || '', date: btn.dataset.ym ? (btn.dataset.ym === todayISO().slice(0, 7) ? todayISO() : `${btn.dataset.ym}-01`) : todayISO() }); break;
       case 'pay-student': payForm('income', id); break;
       case 'pay-teacher': payForm('salary', id); break;
+      case 'pay-payout': payForm('payout', id); break;
       case 'pay-recurring': payForm('expense', id); break;
       case 'remind': remindStudent(id); break;
       case 'lesson-done': lessonDone(id); break;

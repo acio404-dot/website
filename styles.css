@@ -288,3 +288,7 @@ table.pay-table td .name { font-weight: 600; }
 table.matrix tfoot tr.net td { border-top: 2px solid var(--border); }
 table.matrix .neg { color: var(--overdue); }
 .card.banner { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--accent-soft); }
+.teacher-pay { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-2); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.teacher-pay strong { color: var(--text); }
+.payout-list { display: flex; flex-direction: column; gap: 4px; }
+.payout-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
