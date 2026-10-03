@@ -281,3 +281,9 @@ table.matrix td, table.matrix th { white-space: nowrap; }
 table.small th, table.small td { padding: 6px 8px; font-size: 12.5px; white-space: nowrap; }
 code { background: var(--surface-2); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
 .modal { max-width: 720px; }
+table.pay-table td.pcell.paid { background: var(--ok-bg); color: var(--ok); font-weight: 600; }
+table.pay-table td.pcell.due { background: var(--overdue-bg); color: var(--overdue); font-weight: 600; cursor: pointer; }
+table.pay-table td.pcell.due:hover { filter: brightness(.95); }
+table.pay-table td .name { font-weight: 600; }
+table.matrix tfoot tr.net td { border-top: 2px solid var(--border); }
+table.matrix .neg { color: var(--overdue); }

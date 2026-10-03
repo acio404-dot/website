@@ -467,16 +467,15 @@
         <h2>Начнём с данных</h2>
         <p>Создайте проекты и группы, добавьте учеников и преподавателей — и дашборд покажет, кому и когда напомнить об оплате, кому выплатить зарплату и какие подписки пора оплатить.</p>
         <div class="toolbar" style="justify-content:center">
-          <button class="btn primary" data-act="seed-mine">Начать с TR-YOS Zone</button>
-          <button class="btn" data-act="demo">Загрузить пример</button>
+          <button class="btn primary" data-act="seed-mine">Загрузить TR-YOS Zone из таблицы</button>
           <button class="btn" data-act="add-sheet">Подключить Google Таблицу</button>
         </div>
-        <p class="small muted mt">«Мой проект» — это TR-YOS Zone с расходами и подписками из вашей таблицы Numbers. «Пример» добавит к нему выдуманные группы и учеников, чтобы посмотреть, как всё работает.</p>
+        <p class="small muted mt">Первая кнопка переносит данные из файла Finances: 6 групп, учеников с оплатами за июнь–октябрь, преподавателей, расходы по категориям и подписки.</p>
         </div></div>`;
     }
     const dueStudents = students.filter((s) => needsAction(studentStatus(s))).sort((a, b) => STATUS_ORDER[studentStatus(a)] - STATUS_ORDER[studentStatus(b)] || (a.nextDue || '').localeCompare(b.nextDue || ''));
     const outs = [
-      ...teachers.filter((t) => needsAction(teacherStatus(t))).map((t) => ({ kind: 'salary', st: teacherStatus(t), due: t.nextDue, amount: teacherAmount(t), html: teacherRow(t) })),
+      ...teachers.filter((t) => teacherAmount(t) > 0 && needsAction(teacherStatus(t))).map((t) => ({ kind: 'salary', st: teacherStatus(t), due: t.nextDue, amount: teacherAmount(t), html: teacherRow(t) })),
       ...recurring.filter((r) => needsAction(recurringStatus(r))).map((r) => ({ kind: 'expense', st: recurringStatus(r), due: r.nextDue, amount: r.amount, html: recurringRow(r) })),
     ].sort((a, b) => STATUS_ORDER[a.st] - STATUS_ORDER[b.st] || a.due.localeCompare(b.due));
     const collect = dueStudents.reduce((a, s) => a + studentAmount(s), 0);
@@ -491,7 +490,7 @@
     for (let i = 0; i <= 7; i++) {
       const iso = fmtISO(new Date(Date.now() + i * 86400000));
       students.filter((s) => s.payType === 'monthly' && s.nextDue === iso).forEach((s) => upcoming.push({ iso, kind: 'in', name: s.name, amount: studentAmount(s) }));
-      teachers.filter((t) => t.nextDue === iso).forEach((t) => upcoming.push({ iso, kind: 'out', name: t.name, amount: teacherAmount(t) }));
+      teachers.filter((t) => t.nextDue === iso && teacherAmount(t) > 0).forEach((t) => upcoming.push({ iso, kind: 'out', name: t.name, amount: teacherAmount(t) }));
       recurring.filter((r) => r.nextDue === iso).forEach((r) => upcoming.push({ iso, kind: 'out', name: r.name, amount: r.amount }));
     }
     const groupRows = groups.map((g) => {
@@ -532,7 +531,7 @@
         </section>
       </div>
       <section class="card mt">
-        <div class="card-head"><h2>Доходы и расходы по месяцам</h2><div class="toolbar"><button class="btn sm" data-tab-go="expenses">Расходы по категориям →</button><button class="btn sm" data-act="chart-toggle">${ui.chartTable ? 'График' : 'Таблица'}</button></div></div>
+        <div class="card-head"><h2>Доходы и расходы по месяцам</h2><div class="toolbar"><button class="btn sm" data-tab-go="expenses">Таблица помесячно →</button><button class="btn sm" data-act="chart-toggle">${ui.chartTable ? 'График' : 'Таблица'}</button></div></div>
         <div id="chart"></div>
       </section>`;
   }
@@ -590,8 +589,42 @@
   function niceCeil(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); const n = v / p; const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 4 ? 4 : n <= 5 ? 5 : n <= 8 ? 8 : 10; return step * p; }
   function shortNum(v) { const f = (x) => String(Math.round(x * 10) / 10).replace('.', ','); if (v >= 1e6) return `${f(v / 1e6)}М`; if (v >= 1e3) return `${f(v / 1e3)}К`; return String(Math.round(v)); }
 
+  function renderPaymentsTable() {
+    const cur = todayISO().slice(0, 7);
+    const months = []; for (let i = 5; i >= 0; i--) months.push(ymShift(cur, -i));
+    const endOfMonth = `${cur}-${pad(daysInMonth(Number(cur.slice(0, 4)), Number(cur.slice(5, 7)) - 1))}`;
+    const paid = {};
+    paymentsFiltered().forEach((p) => { if (p.kind === 'income' && p.personId) { const k = p.personId + '|' + ymOf(p.date); paid[k] = (paid[k] || 0) + p.amount; } });
+    const cell = (s, ym) => {
+      const v = paid[s.id + '|' + ym];
+      if (v) return `<td class="num pcell paid" title="Оплачено ${money(v)}">${money(v)}</td>`;
+      if (ym === cur && s.payType === 'monthly' && s.nextDue && s.nextDue <= endOfMonth) return `<td class="num pcell due" data-act="pay-student" data-id="${s.id}" title="Ожидается ${s.price ? money(s.price) : ''} к ${fmtDate(s.nextDue)} — нажмите, чтобы записать оплату">${s.price ? money(s.price) : '?'}</td>`;
+      if (ym === cur && s.payType === 'package' && s.lessonsLeft <= 1) return `<td class="num pcell due" data-act="pay-student" data-id="${s.id}" title="Абонемент заканчивается">${money(s.price)}</td>`;
+      return `<td class="num pcell zero">·</td>`;
+    };
+    const studentRowHtml = (s) => `<tr><td><span class="name">${esc(s.name)}</span>${s.notes ? `<div class="sub">${esc(s.notes)}</div>` : ''}</td>${months.map((ym) => cell(s, ym)).join('')}</tr>`;
+    const sections = [];
+    activeGroups().forEach((g) => {
+      const gs = activeStudents().filter((s) => s.groupId === g.id).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+      const t = teacherById(g.teacherId);
+      sections.push(`<tr class="month-head"><td colspan="${months.length + 1}">${esc(g.name)} <span class="sub">· ${g.payDay}-го числа${t ? ' · ' + esc(t.name) : ''}${g.schedule ? ' · ' + esc(g.schedule) : ''}</span></td></tr>` + (gs.length ? gs.map(studentRowHtml).join('') : `<tr><td colspan="${months.length + 1}" class="muted small">нет учеников</td></tr>`));
+    });
+    const solo = activeStudents().filter((s) => !s.groupId).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    if (solo.length) sections.push(`<tr class="month-head"><td colspan="${months.length + 1}">Индивидуально</td></tr>` + solo.map(studentRowHtml).join(''));
+    const totals = months.map((ym) => Object.entries(paid).reduce((a, [k, v]) => a + (k.endsWith('|' + ym) ? v : 0), 0));
+    const expected = activeStudents().filter((s) => s.payType === 'monthly' && s.nextDue && s.nextDue <= endOfMonth && !paid[s.id + '|' + cur]);
+    return `<div class="card"><div class="table-wrap"><table class="matrix pay-table"><thead><tr><th>Ученик</th>${months.map((ym) => `<th class="num ${ym === cur ? 'cur' : ''}">${ymLabel(ym)}</th>`).join('')}</tr></thead>
+      <tbody>${sections.join('') || `<tr><td colspan="${months.length + 1}" class="muted">Учеников пока нет.</td></tr>`}</tbody>
+      <tfoot><tr><td><strong>${activeStudents().length} ${plural(activeStudents().length, 'ученик', 'ученика', 'учеников')}</strong></td>${totals.map((v, i) => `<td class="num"><strong>${money(v)}</strong>${months[i] === cur && expected.length ? `<div class="sub">ждём ${money(expected.reduce((a, s) => a + s.price, 0))} (${expected.length})</div>` : ''}</td>`).join('')}</tr></tfoot></table></div>
+      <p class="small muted mt">Зелёное — оплачено в этом месяце, красное — ожидается в текущем месяце (нажмите, чтобы записать оплату).</p></div>`;
+  }
   function renderGroups() {
     const groups = state.groups.filter((g) => inProject(g)).sort((a, b) => Number(a.archived) - Number(b.archived) || a.name.localeCompare(b.name, 'ru'));
+    const viewSeg = `<div class="seg"><button class="${ui.groupsView !== 'table' ? 'is-active' : ''}" data-gview="cards">Карточки</button><button class="${ui.groupsView === 'table' ? 'is-active' : ''}" data-gview="table">Таблица оплат</button></div>`;
+    if (ui.groupsView === 'table') {
+      return `<div class="page-head"><h1>Группы <span class="muted small">${groups.filter((g) => !g.archived).length}</span></h1>
+        <div class="toolbar">${viewSeg}<button class="btn primary" data-act="add-group">+ Группа</button></div></div>${renderPaymentsTable()}`;
+    }
     const cards = groups.map((g) => {
       const gs = state.students.filter((s) => s.groupId === g.id && !s.archived).sort((a, b) => STATUS_ORDER[studentStatus(a)] - STATUS_ORDER[studentStatus(b)] || a.name.localeCompare(b.name, 'ru'));
       const t = teacherById(g.teacherId);
@@ -619,7 +652,7 @@
     const solo = activeStudents().filter((s) => !s.groupId);
     return `
       <div class="page-head"><h1>Группы <span class="muted small">${groups.filter((g) => !g.archived).length}</span></h1>
-        <div class="toolbar"><div class="legend"><span><i style="background:var(--ok)"></i>оплачено</span><span><i style="background:var(--soon)"></i>скоро / сегодня</span><span><i style="background:var(--overdue)"></i>просрочено</span></div><button class="btn primary" data-act="add-group">+ Группа</button></div></div>
+        <div class="toolbar"><div class="legend"><span><i style="background:var(--ok)"></i>оплачено</span><span><i style="background:var(--soon)"></i>скоро / сегодня</span><span><i style="background:var(--overdue)"></i>просрочено</span></div>${viewSeg}<button class="btn primary" data-act="add-group">+ Группа</button></div></div>
       ${groups.length ? `<div class="groups-grid">${cards}</div>` : `<div class="card"><div class="empty"><p>Групп пока нет. Группа задаёт цену, схему оплаты и преподавателя для своих учеников.</p><button class="btn primary" data-act="add-group">+ Создать группу</button></div></div>`}
       ${solo.length ? `<section class="card mt"><div class="card-head"><h2>Индивидуально <span class="muted small">${solo.length}</span></h2></div><div class="chips">${solo.map((s) => { const st = studentStatus(s); return `<button class="chip ${st}" data-act="pay-student" data-id="${s.id}" title="${esc(studentDueText(s))}">${esc(s.name)}<span class="chip-st">${st === 'ok' ? '✓' : st === 'overdue' ? '!' : '•'}</span></button>`; }).join('')}</div></section>` : ''}`;
   }
@@ -696,17 +729,48 @@
     const totals = {}; months.forEach((ym) => { totals[ym] = rows.reduce((a, [, row]) => a + (row[ym] || 0), 0); });
     return { rows, totals };
   }
+  function incomeMatrix(projectId, months) {
+    const pays = state.payments.filter((p) => isIn(p) && (p.projectId || '') === projectId);
+    const rows = new Map();
+    pays.forEach((p) => {
+      const st = p.personId ? byId(state.students, p.personId) : null;
+      const g = st && st.groupId ? groupById(st.groupId) : (p.category ? state.groups.find((x) => x.name === p.category) : null);
+      let key, label, sub, section;
+      if (g) { key = 'g:' + g.id; label = g.name; sub = (teacherById(g.teacherId) || {}).name || ''; section = 0; }
+      else if (st) { key = 's:' + st.id; label = st.name; sub = (teacherById(st.teacherId) || {}).name || ''; section = 1; }
+      else { key = 'o:' + (p.category || p.personName); label = p.category || p.personName; sub = ''; section = 2; }
+      if (!rows.has(key)) rows.set(key, { label, sub, section, cells: {} });
+      const r = rows.get(key); const ym = ymOf(p.date); r.cells[ym] = (r.cells[ym] || 0) + p.amount;
+    });
+    const list = [...rows.values()].sort((a, b) => a.section - b.section || a.label.localeCompare(b.label, 'ru'));
+    const totals = {}; months.forEach((ym) => { totals[ym] = list.reduce((a, r) => a + (r.cells[ym] || 0), 0); });
+    return { rows: list, totals };
+  }
   function renderExpenses() {
     const end = ui.expEnd || todayISO().slice(0, 7);
     const months = []; for (let i = 5; i >= 0; i--) months.push(ymShift(end, -i));
     const projects = (ui.project === 'all' ? state.projects.map((p) => p.id).concat(state.payments.some((p) => !isIn(p) && !p.projectId) || state.recurring.some((r) => !r.projectId) ? [''] : []) : [ui.project]);
+    const SECTION = ['Группы', 'Индивидуально', 'Прочие доходы'];
     const sections = projects.map((pid) => {
       const { rows, totals } = expenseMatrix(pid, months);
+      const inc = incomeMatrix(pid, months);
       const name = pid ? projectName(pid) : 'Без проекта';
       const grand = months.reduce((a, ym) => a + totals[ym], 0);
+      const grandIn = months.reduce((a, ym) => a + inc.totals[ym], 0);
       const rec = state.recurring.filter((r) => !r.archived && (r.projectId || '') === pid);
-      return `<section class="card mt">
-        <div class="card-head"><div><h2>${esc(name)}</h2><div class="small muted">расходы по месяцам · итого за период ${money(grand)}</div></div>
+      let lastSection = -1;
+      const incRows = inc.rows.map((r) => { let head = ''; if (r.section !== lastSection) { lastSection = r.section; head = `<tr class="month-head"><td colspan="${months.length + 2}">${SECTION[r.section]}</td></tr>`; } return head + `<tr><td>${esc(r.label)}${r.sub ? ` <span class="sub">· ${esc(r.sub)}</span>` : ''}</td>${months.map((ym) => `<td class="num ${r.cells[ym] ? '' : 'zero'}">${r.cells[ym] ? money(r.cells[ym]) : '·'}</td>`).join('')}<td class="num"><strong>${money(months.reduce((a, ym) => a + (r.cells[ym] || 0), 0))}</strong></td></tr>`; }).join('');
+      const incomeTable = `<section class="card mt">
+        <div class="card-head"><div><h2>${esc(name)} · доходы</h2><div class="small muted">оплаты учеников по группам · итого за период ${money(grandIn)}</div></div><button class="btn sm" data-tab-go="groups">Оплаты по ученикам →</button></div>
+        <div class="table-wrap"><table class="matrix"><thead><tr><th>Группа \\ Месяц</th>${months.map((ym) => `<th class="num ${ym === todayISO().slice(0, 7) ? 'cur' : ''}">${ymLabel(ym)}</th>`).join('')}<th class="num">Итого</th></tr></thead><tbody>
+          ${incRows || `<tr><td colspan="${months.length + 2}" class="muted">Поступлений за период нет.</td></tr>`}
+        </tbody><tfoot>
+          <tr><td><strong>Доходы</strong></td>${months.map((ym) => `<td class="num"><strong>${money(inc.totals[ym])}</strong></td>`).join('')}<td class="num"><strong>${money(grandIn)}</strong></td></tr>
+          <tr><td><strong>Расходы</strong></td>${months.map((ym) => `<td class="num"><strong>${money(-totals[ym])}</strong></td>`).join('')}<td class="num"><strong>${money(-grand)}</strong></td></tr>
+          <tr class="net"><td><strong>Итог</strong></td>${months.map((ym) => `<td class="num"><strong class="${inc.totals[ym] - totals[ym] < 0 ? 'neg' : ''}">${money(inc.totals[ym] - totals[ym])}</strong></td>`).join('')}<td class="num"><strong class="${grandIn - grand < 0 ? 'neg' : ''}">${money(grandIn - grand)}</strong></td></tr>
+        </tfoot></table></div></section>`;
+      return incomeTable + `<section class="card mt">
+        <div class="card-head"><div><h2>${esc(name)} · расходы</h2><div class="small muted">по категориям · итого за период ${money(grand)}</div></div>
           <div class="toolbar"><button class="btn sm" data-act="add-expense" data-project="${pid}">+ Расход</button><button class="btn sm" data-act="add-recurring" data-project="${pid}">+ Подписка</button></div></div>
         <div class="table-wrap"><table class="matrix"><thead><tr><th>Категория \\ Месяц</th>${months.map((ym) => `<th class="num ${ym === todayISO().slice(0, 7) ? 'cur' : ''}">${ymLabel(ym)}</th>`).join('')}<th class="num">Итого</th></tr></thead><tbody>
           ${rows.length ? rows.map(([cat, row]) => `<tr><td>${esc(cat)}${rec.some((r) => r.name === cat) ? ' <span class="badge muted">подписка</span>' : ''}</td>${months.map((ym) => `<td class="num cell ${row[ym] ? '' : 'zero'}" data-act="add-expense" data-project="${pid}" data-cat="${esc(cat)}" data-ym="${ym}" title="Добавить расход «${esc(cat)}» за ${ymLabel(ym)}">${row[ym] ? money(-row[ym]) : '·'}</td>`).join('')}<td class="num"><strong>${money(-months.reduce((a, ym) => a + (row[ym] || 0), 0))}</strong></td></tr>`).join('') : `<tr><td colspan="${months.length + 2}" class="muted">Расходов пока нет — нажмите «+ Расход» или на ячейку таблицы.</td></tr>`}
@@ -715,9 +779,9 @@
       </section>`;
     }).join('');
     return `
-      <div class="page-head"><h1>Расходы</h1>
+      <div class="page-head"><h1>Помесячно</h1>
         <div class="toolbar"><div class="seg"><button data-exp="-1">‹</button><button data-exp="0">Сегодня</button><button data-exp="1">›</button></div><button class="btn" data-act="export-expenses">Скачать CSV</button><button class="btn primary" data-act="add-expense" data-project="${ui.project === 'all' ? '' : ui.project}">+ Расход</button></div></div>
-      <p class="small muted">Таблица в формате вашего Numbers: категория × месяц, суммы со знаком минус. Клик по ячейке добавляет расход в эту категорию и месяц. Зарплаты попадают сюда автоматически.</p>
+      <p class="small muted">Как в вашей таблице «monthly»: доходы по группам и расходы по категориям за месяц, внизу итог. Клик по ячейке расходов добавляет расход в эту категорию и месяц. Зарплаты попадают в расходы автоматически.</p>
       ${sections || `<div class="card"><div class="empty"><p>Проектов пока нет.</p><button class="btn primary" data-act="add-project">+ Проект</button></div></div>`}`;
   }
 
@@ -730,7 +794,7 @@
     const events = {};
     const push = (iso, ev) => { (events[iso] = events[iso] || []).push(ev); };
     activeStudents().forEach((s) => { if (s.payType === 'monthly' && s.nextDue) push(s.nextDue, { kind: 'in', act: 'pay-student', name: s.name, amount: studentAmount(s), late: s.nextDue < today, id: s.id, label: 'оплата от ученика' }); });
-    activeTeachers().forEach((t) => { if (t.nextDue) push(t.nextDue, { kind: 'out', act: 'pay-teacher', name: t.name, amount: teacherAmount(t), late: t.nextDue < today, id: t.id, label: 'зарплата' }); });
+    activeTeachers().forEach((t) => { if (t.nextDue && teacherAmount(t) > 0) push(t.nextDue, { kind: 'out', act: 'pay-teacher', name: t.name, amount: teacherAmount(t), late: t.nextDue < today, id: t.id, label: 'зарплата' }); });
     activeRecurring().forEach((r) => { if (r.nextDue) push(r.nextDue, { kind: 'out', act: 'pay-recurring', name: r.name, amount: r.amount, late: r.nextDue < today, id: r.id, label: 'подписка' }); });
     const monthPrefix = `${y}-${pad(m + 1)}`;
     const lateOutside = Object.entries(events).filter(([iso]) => iso < today && !iso.startsWith(monthPrefix)).flatMap(([iso, evs]) => evs.map((e) => ({ ...e, iso })));
@@ -811,8 +875,8 @@
           <dl class="kv mt"><dt>Проектов</dt><dd>${state.projects.length}</dd><dt>Групп</dt><dd>${state.groups.length}</dd><dt>Учеников</dt><dd>${state.students.length}</dd><dt>Преподавателей</dt><dd>${state.teachers.length}</dd><dt>Подписок</dt><dd>${state.recurring.length}</dd><dt>Записей в истории</dt><dd>${state.payments.length}</dd></dl>
         </section>
         <section class="card danger-zone"><div class="card-head"><h2>Опасная зона</h2></div>
-          <div class="toolbar"><button class="btn" data-act="seed-mine">TR-YOS Zone из Numbers</button><button class="btn" data-act="demo">Пример данных</button><button class="btn danger" data-act="wipe">Удалить все данные</button></div>
-          <p class="form-note mt">«TR-YOS Zone из Numbers» и «Пример» заменят текущие данные. Перед этим скачайте копию.</p>
+          <div class="toolbar"><button class="btn" data-act="seed-mine">TR-YOS Zone из таблицы Finances</button><button class="btn danger" data-act="wipe">Удалить все данные</button></div>
+          <p class="form-note mt">Загрузка из таблицы заменит текущие данные. Перед этим скачайте копию.</p>
         </section>
       </div>`;
   }
@@ -860,57 +924,65 @@
     if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
   }
 
-  // ---------- Данные из Numbers и пример ----------
-  // Из файла Untitled.numbers: лист «TR-YOS Zone», таблица «monthly spendings», июнь 2026, суммы в $.
-  function seedMine(keepPeople) {
+  // ---------- Данные из файла Finances.pdf (Numbers): TR-YOS Zone, июнь–октябрь 2026, суммы в $ ----------
+  function seedMine() {
+    const Y = '2026';
+    const theme = state.settings.theme;
     const projects = [{ id: 'p-tr', name: 'TR-YOS Zone', notes: '' }];
-    const june = (cat, amount, pid) => ({ id: uid(), kind: 'expense', date: '2026-06-01', amount, personId: '', personName: cat, category: cat, projectId: pid, note: 'из таблицы Numbers' });
-    const payments = [
-      june('Instagram target', 70, 'p-tr'), june('Instagram subscription', 8, 'p-tr'), june('Telegram premium', 4, 'p-tr'), june('Ads - Telegram', 12.42, 'p-tr'), june('Zoom - sub', 23.14, 'p-tr'),
+    const T = (id, name) => ({ id, name, projectId: 'p-tr', subject: 'TR-YOS', payType: 'monthly', rate: 0, payDay: 1, nextDue: `${Y}-11-01`, lessonsDone: 0, phone: '', notes: 'ставка не указана в таблице', lastPaid: null, archived: false });
+    const teachers = [T('t-asilbek', 'Asilbek'), T('t-elvira', 'Elvira'), T('t-regina', 'Regina'), T('t-diyora', 'Diyora')];
+    const G = (id, name, payDay, teacherId, price) => ({ id, name, projectId: 'p-tr', teacherId, subject: 'TR-YOS', schedule: '', payType: 'monthly', price, payDay, lessonsInPackage: 8, notes: `оплата ${payDay}-го числа`, archived: false });
+    const groups = [G('g-1', 'Group #1', 15, 't-asilbek', 104), G('g-j1', 'Group J1', 7, 't-elvira', 150), G('g-j2', 'Group J2', 15, 't-regina', 150), G('g-s1', 'Group S1', 8, 't-elvira', 150), G('g-o1', 'Group O1', 1, 't-regina', 240), G('g-o2', 'Group O2', 18, '', 0)];
+    // [имя, группа|null, преподаватель, цена, оплаты {месяц: сумма}, следующая оплата, заметка, архив]
+    const S = [
+      ['Виталина', 'g-1', 't-asilbek', 118, { 6: 118, 7: 118, 8: 236 }, '10-15'],
+      ['Петимат', 'g-1', 't-asilbek', 104, { 6: 104, 7: 104, 8: 214 }, '10-15'],
+      ['Сакина', 'g-1', 't-asilbek', 100, { 6: 100, 7: 100, 8: 100, 9: 100 }, '10-15'],
+      ['Мария', 'g-1', 't-asilbek', 104, { 6: 104, 7: 104, 8: 214 }, '10-15'],
+      ['Ахмад', 'g-j1', 't-elvira', 104, { 7: 104 }, '08-07', 'нет оплат с июля (по таблице)', true],
+      ['Батырхан', 'g-j1', 't-elvira', 150, { 7: 150, 8: 150, 9: 150 }, '10-07'],
+      ['Лиза', 'g-j1', 't-elvira', 150, { 7: 150, 8: 150 }, '09-07'],
+      ['Тетя шляпа', 'g-j2', 't-regina', 150, { 7: 150, 8: 150, 9: 150 }, '10-15'],
+      ['Рамиль', 'g-j2', 't-regina', 150, { 7: 107, 8: 107, 9: 150 }, '10-15'],
+      ['Mariia', null, 't-regina', 100, { 7: [50, 'g-j2'], 8: 100 }, '09-01', 'в июле группа J2, с августа индивидуально'],
+      ['Энже', 'g-s1', 't-elvira', 150, { 9: 150 }, '10-08'],
+      ['Малика', 'g-s1', 't-elvira', 150, { 9: 150 }, '10-08'],
+      ['Милана', 'g-s1', 't-elvira', 240, { 9: 240 }, '10-08'],
+      ['Камиль', 'g-o1', 't-regina', 245, { 10: 245 }, '11-01'],
+      ['Анна', 'g-o1', 't-regina', 240, { 10: 240 }, '11-01'],
+      ['Айша', 'g-o1', 't-regina', 150, {}, '10-01'],
+      ['Ясмина', null, 't-regina', 320, { 8: 320, 9: 320, 10: 320 }, '11-01'],
+      ['Gulnoza', null, 't-diyora', 400, { 10: 400 }, '11-01'],
+      ['Диана', null, 't-diyora', 0, {}, '10-01', 'сумма не указана в таблице'],
+      ['Даяна', null, 't-diyora', 0, {}, '10-01', 'сумма не указана в таблице'],
+      ['Firdaus', null, '', 0, {}, '11-01', 'TOEFL + Английский · условия не указаны в таблице'],
     ];
-    const recurring = [
-      { id: 'r-ig', name: 'Instagram subscription', projectId: 'p-tr', amount: 8, payDay: 1, nextDue: nextDateForDay(1), notes: '', lastPaid: null, archived: false },
-      { id: 'r-tg', name: 'Telegram premium', projectId: 'p-tr', amount: 4, payDay: 1, nextDue: nextDateForDay(1), notes: '', lastPaid: null, archived: false },
-      { id: 'r-zoom', name: 'Zoom - sub', projectId: 'p-tr', amount: 23.14, payDay: 1, nextDue: nextDateForDay(1), notes: '', lastPaid: null, archived: false },
-    ];
-    state = Object.assign(defaultState(), { settings: Object.assign(defaultState().settings, { currency: '$' }, { theme: state.settings.theme }), projects, recurring, payments });
-    if (!keepPeople) { save(); render(); toast('TR-YOS Zone: расходы и подписки из Numbers загружены'); }
-  }
-  function loadDemo() {
-    seedMine(true);
-    const t = todayISO();
-    const d = (n) => fmtISO(new Date(Date.now() + n * 86400000));
-    state.teachers = [
-      { id: 't1', name: 'Айше Йылмаз', projectId: 'p-tr', subject: 'Математика YÖS', payType: 'monthly', rate: 900, payDay: 5, nextDue: nextDateForDay(5), lessonsDone: 0, phone: '', notes: '', lastPaid: null, archived: false },
-      { id: 't2', name: 'Олег Смирнов', projectId: 'p-tr', subject: 'Турецкий язык', payType: 'perLesson', rate: 15, payDay: 10, nextDue: d(2), lessonsDone: 14, phone: '', notes: '', lastPaid: null, archived: false },
-      { id: 't3', name: 'Анна Ковалёва', projectId: 'p-tr', subject: 'Турецкий язык', payType: 'monthly', rate: 600, payDay: 1, nextDue: d(-3), lessonsDone: 0, phone: '', notes: '', lastPaid: null, archived: false },
-    ];
-    state.groups = [
-      { id: 'g1', name: 'YÖS Математика, вечерняя', projectId: 'p-tr', teacherId: 't1', subject: 'Математика', schedule: 'Пн, Ср, Пт 19:00', payType: 'monthly', price: 120, payDay: 1, lessonsInPackage: 8, notes: '', archived: false },
-      { id: 'g2', name: 'YÖS Математика, утренняя', projectId: 'p-tr', teacherId: 't1', subject: 'Математика', schedule: 'Вт, Чт 10:00', payType: 'monthly', price: 120, payDay: 15, lessonsInPackage: 8, notes: '', archived: false },
-      { id: 'g3', name: 'Турецкий A1', projectId: 'p-tr', teacherId: 't2', subject: 'Турецкий', schedule: 'Сб 12:00', payType: 'package', price: 80, payDay: 1, lessonsInPackage: 8, notes: '', archived: false },
-      { id: 'g4', name: 'Турецкий B1', projectId: 'p-tr', teacherId: 't3', subject: 'Турецкий', schedule: 'Вт, Чт 17:00', payType: 'monthly', price: 90, payDay: 3, lessonsInPackage: 8, notes: '', archived: false },
-    ];
-    const mk = (id, name, g, extra) => Object.assign({ id, name, groupId: g.id, projectId: g.projectId, teacherId: g.teacherId, subject: g.subject, payType: g.payType, price: g.price, payDay: g.payDay, nextDue: g.payType === 'monthly' ? nextDateForDay(g.payDay) : null, lessonsInPackage: g.lessonsInPackage, lessonsLeft: g.lessonsInPackage, phone: '', notes: '', lastPaid: null, remindedAt: null, archived: false }, extra);
-    const [g1, g2, g3, g4] = state.groups;
-    state.students = [
-      mk('s1', 'Иван Петров', g1, { nextDue: d(-5), phone: '+905550000001' }), mk('s2', 'Мерьем Кая', g1, { nextDue: t }), mk('s3', 'Артём Волков', g1, { nextDue: d(12) }), mk('s4', 'Дарья Миронова', g1, { nextDue: d(20), notes: 'скидка 10%', price: 108 }),
-      mk('s5', 'Кирилл Орлов', g2, { nextDue: d(2) }), mk('s6', 'Эмир Демир', g2, { nextDue: d(2) }), mk('s7', 'Максим Белов', g2, { nextDue: d(-20) }),
-      mk('s8', 'Соня Егорова', g3, { lessonsLeft: 1 }), mk('s9', 'Лиза Новикова', g3, { lessonsLeft: 6 }),
-      mk('s10', 'Зейнеп Арслан', g4, { nextDue: t }), mk('s11', 'Тимур Гусев', g4, { nextDue: d(9) }),
-      mk('s12', 'Полина Сафонова', { id: '', projectId: 'p-tr', teacherId: 't3', subject: 'Турецкий, индивидуально', payType: 'monthly', price: 150, payDay: 10, lessonsInPackage: 8 }, { nextDue: d(5) }),
-    ];
-    for (let mo = 1; mo <= 5; mo++) {
-      const base = new Date(); base.setMonth(base.getMonth() - mo);
-      const ym = `${base.getFullYear()}-${pad(base.getMonth() + 1)}`;
-      state.students.forEach((s, i) => { if (i % 5 !== mo % 4) addPayment({ kind: 'income', date: `${ym}-${pad(Math.min(28, s.payDay))}`, amount: s.price, personId: s.id, personName: s.name, projectId: s.projectId, category: (groupById(s.groupId) || {}).name || '' }); });
-      state.teachers.forEach((tt) => addPayment({ kind: 'salary', date: `${ym}-${pad(tt.payDay)}`, amount: tt.payType === 'perLesson' ? tt.rate * (10 + mo) : tt.rate, personId: tt.id, personName: tt.name, projectId: tt.projectId, category: 'Зарплаты' }));
-      state.recurring.forEach((r) => addPayment({ kind: 'expense', date: `${ym}-01`, amount: r.amount, personId: r.id, personName: r.name, projectId: r.projectId, category: r.name }));
-      addPayment({ kind: 'expense', date: `${ym}-15`, amount: 60 + mo * 5, personId: '', personName: 'Instagram target', projectId: 'p-tr', category: 'Instagram target' });
-    }
-    addPayment({ kind: 'income', date: d(-1), amount: 120, personId: 's3', personName: 'Артём Волков', projectId: 'p-tr', category: g1.name, note: 'перевод' });
-    addPayment({ kind: 'expense', date: d(-2), amount: 300, personId: '', personName: 'Аренда', projectId: 'p-tr', category: 'Аренда', note: MONTHS[new Date().getMonth()].toLowerCase() });
-    save(); render(); toast('Пример данных загружен');
+    const students = []; const payments = [];
+    S.forEach(([name, groupId, teacherId, price, pays, next, notes, archived], i) => {
+      const g = groups.find((x) => x.id === groupId);
+      const payDay = g ? g.payDay : 1;
+      const id = `s-${i + 1}`;
+      const dates = Object.keys(pays).map(Number).sort((a, b) => a - b);
+      const last = dates.length ? dates[dates.length - 1] : null;
+      students.push({ id, name, groupId: groupId || '', projectId: 'p-tr', teacherId, subject: name === 'Firdaus' ? 'TOEFL + Английский' : 'TR-YOS', payType: 'monthly', price, payDay, nextDue: `${Y}-${next}`, lessonsInPackage: 8, lessonsLeft: 0, phone: '', notes: notes || '', lastPaid: last ? `${Y}-${pad(last)}-${pad(payDay)}` : null, remindedAt: null, archived: !!archived });
+      dates.forEach((mo) => {
+        const v = pays[mo]; const amount = Array.isArray(v) ? v[0] : v; const gid = Array.isArray(v) ? v[1] : groupId;
+        const gg = groups.find((x) => x.id === gid);
+        payments.push({ id: uid(), kind: 'income', date: `${Y}-${pad(mo)}-${pad(gg ? gg.payDay : 1)}`, amount, personId: id, personName: name, category: gg ? gg.name : '', projectId: 'p-tr', note: 'из таблицы Student Payments' });
+      });
+    });
+    // Расходы: категория → [июнь, июль, август, сентябрь, октябрь]
+    const E = {
+      'Instagram target': [80, 60, 35, 80, 40], 'Instagram subscription': [8, 8, 8, 8, 8], 'Telegram premium': [4, 4, 4, 4, 4],
+      'Ads - Telegram': [24.84, 68.36, 23, 23, 0], 'Zoom - sub': [23.14, 23.14, 23.14, 23.14, 23.14], 'Ai': [0, 0, 0, 35.4, 115], 'Inventory': [0, 450, 115, 115, 0], 'Other': [0, 0, 1, 31, 0],
+    };
+    Object.entries(E).forEach(([cat, arr]) => arr.forEach((amount, i) => { if (amount) payments.push({ id: uid(), kind: 'expense', date: `${Y}-${pad(6 + i)}-01`, amount, personId: '', personName: cat, category: cat, projectId: 'p-tr', note: 'из таблицы monthly' }); }));
+    const R = (id, name, amount) => ({ id, name, projectId: 'p-tr', amount, payDay: 1, nextDue: `${Y}-11-01`, notes: '', lastPaid: `${Y}-10-01`, archived: false });
+    const recurring = [R('r-ig', 'Instagram subscription', 8), R('r-tg', 'Telegram premium', 4), R('r-zoom', 'Zoom - sub', 23.14)];
+    payments.sort((a, b) => b.date.localeCompare(a.date));
+    state = Object.assign(defaultState(), { settings: Object.assign(defaultState().settings, { currency: '$', remindDays: 7, theme }), projects, groups, students, teachers, recurring, payments });
+    ui.project = 'all';
+    save(); render(); toast('Данные TR-YOS Zone из таблицы загружены');
   }
 
   // ---------- Google Таблицы ----------
@@ -1244,6 +1316,7 @@
     const sf = e.target.closest('[data-sfilter]'); if (sf) { ui.studentFilter = sf.dataset.sfilter; render(); return; }
     const tf = e.target.closest('[data-tfilter]'); if (tf) { ui.teacherFilter = tf.dataset.tfilter; render(); return; }
     const hf = e.target.closest('[data-hfilter]'); if (hf) { ui.historyKind = hf.dataset.hfilter; render(); return; }
+    const gv = e.target.closest('[data-gview]'); if (gv) { ui.groupsView = gv.dataset.gview; render(); return; }
     const ex = e.target.closest('[data-exp]'); if (ex) { const n = Number(ex.dataset.exp); ui.expEnd = n === 0 ? null : ymShift(ui.expEnd || todayISO().slice(0, 7), n); render(); return; }
     const cal = e.target.closest('[data-cal]'); if (cal) {
       const n = Number(cal.dataset.cal);
@@ -1294,8 +1367,7 @@
       case 'export': exportJSON(); break;
       case 'export-csv': exportCSV(); break;
       case 'export-expenses': exportExpenses(); break;
-      case 'seed-mine': if ((!state.students.length && !state.payments.length) || confirm('Заменить текущие данные проектом TR-YOS Zone из Numbers?')) seedMine(false); break;
-      case 'demo': if ((!state.students.length && !state.payments.length) || confirm('Заменить текущие данные примером?')) loadDemo(); break;
+      case 'seed-mine': if ((!state.students.length && !state.payments.length) || confirm('Заменить текущие данные данными TR-YOS Zone из таблицы Finances?')) seedMine(); break;
       case 'wipe': if (confirm('Удалить все данные без возможности восстановления?')) { state = defaultState(); ui.project = 'all'; save(); render(); toast('Данные удалены'); } break;
     }
   });
