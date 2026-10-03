@@ -277,3 +277,7 @@ table.matrix td, table.matrix th { white-space: nowrap; }
   table.matrix th:first-child, table.matrix td:first-child { position: sticky; left: 0; background: var(--surface); z-index: 1; white-space: normal; min-width: 140px; }
   table.matrix tfoot td:first-child { background: var(--surface-2); }
 }
+#sync-btn.has-error { color: var(--overdue); border-color: color-mix(in srgb, var(--overdue) 50%, var(--border)); }
+table.small th, table.small td { padding: 6px 8px; font-size: 12.5px; white-space: nowrap; }
+code { background: var(--surface-2); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
+.modal { max-width: 720px; }

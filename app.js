@@ -58,7 +58,7 @@
 
   // ---------- Состояние ----------
   const defaultState = () => ({
-    settings: { currency: '$', remindDays: 3, theme: 'auto' },
+    settings: { currency: '$', remindDays: 3, theme: 'auto', sheets: [] },
     projects: [],
     groups: [],
     students: [],
@@ -78,6 +78,7 @@
     s.payments.forEach((p) => { if (p.kind === 'other') p.kind = 'expense'; if (!('projectId' in p)) p.projectId = ''; if (!('category' in p)) p.category = ''; });
     s.students.forEach((x) => { if (!('groupId' in x)) x.groupId = ''; if (!('projectId' in x)) x.projectId = ''; });
     s.teachers.forEach((x) => { if (!('projectId' in x)) x.projectId = ''; });
+    if (!Array.isArray(s.settings.sheets)) s.settings.sheets = [];
     return s;
   }
   function load() {
@@ -418,6 +419,7 @@
     const fn = { overview: renderOverview, groups: renderGroups, students: renderStudents, teachers: renderTeachers, expenses: renderExpenses, calendar: renderCalendar, history: renderHistory, settings: renderSettings }[activeTab];
     view.innerHTML = fn();
     if (activeTab === 'overview') mountChart();
+    updateSyncButton();
   }
 
   const multiProject = () => state.projects.length > 1 && ui.project === 'all';
@@ -467,6 +469,7 @@
         <div class="toolbar" style="justify-content:center">
           <button class="btn primary" data-act="seed-mine">Начать с TR-YOS Zone</button>
           <button class="btn" data-act="demo">Загрузить пример</button>
+          <button class="btn" data-act="add-sheet">Подключить Google Таблицу</button>
         </div>
         <p class="small muted mt">«Мой проект» — это TR-YOS Zone с расходами и подписками из вашей таблицы Numbers. «Пример» добавит к нему выдуманные группы и учеников, чтобы посмотреть, как всё работает.</p>
         </div></div>`;
@@ -787,7 +790,8 @@
     const size = new Blob([JSON.stringify(state)]).size;
     return `
       <div class="page-head"><h1>Настройки</h1></div>
-      <div class="grid-2">
+      ${renderSheetsSection()}
+      <div class="grid-2 mt">
         <section class="card"><div class="card-head"><h2>Проекты</h2><button class="btn sm" data-act="add-project">+ Проект</button></div>
           ${state.projects.length ? `<div class="list">${state.projects.map((p) => { const n = state.students.filter((x) => x.projectId === p.id && !x.archived).length, g = state.groups.filter((x) => x.projectId === p.id && !x.archived).length; return `<div class="row"><div class="row-main"><div class="row-title">${esc(p.name)}</div><div class="row-sub">${g} ${plural(g, 'группа', 'группы', 'групп')} · ${n} ${plural(n, 'ученик', 'ученика', 'учеников')}${p.notes ? ' · ' + esc(p.notes) : ''}</div></div><div class="row-actions"><button class="btn sm" data-act="edit-project" data-id="${p.id}">✎</button><button class="btn sm danger" data-act="del-project" data-id="${p.id}">✕</button></div></div>`; }).join('')}</div>` : `<p class="small muted">Проекты — это направления центра (например, TR-YOS Zone). Если проектов несколько, фильтр вверху страницы переключает весь дашборд.</p>`}
         </section>
@@ -909,6 +913,329 @@
     save(); render(); toast('Пример данных загружен');
   }
 
+  // ---------- Google Таблицы ----------
+  const SHEET_TYPES = { students: 'Ученики', teachers: 'Преподаватели', expenses: 'Расходы (категория × месяц)', payments: 'Журнал платежей' };
+  const SHEET_FIELDS = {
+    students: [
+      ['name', 'Имя ученика *', /имя|фио|ученик|student|name|isim|öğrenci|^ad$/i],
+      ['group', 'Группа', /групп|group|grup|sınıf/i],
+      ['teacher', 'Преподаватель', /преподав|учител|teacher|öğretmen|hoca/i],
+      ['subject', 'Предмет', /предмет|subject|ders|курс|course/i],
+      ['price', 'Сумма оплаты', /цена|сумма|стоим|price|amount|fee|ücret|tutar/i],
+      ['payDay', 'День оплаты (число месяца)', /день оплаты|число|pay ?day/i],
+      ['nextDue', 'Дата следующей оплаты', /следующ|срок|дата оплаты|due|next|son ödeme/i],
+      ['lastPaid', 'Дата последней оплаты', /последн|last paid|ödeme tarihi/i],
+      ['status', 'Статус (оплачено / нет)', /статус|status|durum|оплатил|оплачено|ödendi/i],
+      ['lessonsInPackage', 'Занятий в абонементе', /абонемент|package|занятий в/i],
+      ['lessonsLeft', 'Осталось занятий', /остал|left|kalan/i],
+      ['phone', 'Телефон', /тел|phone|telefon|whatsapp/i],
+      ['notes', 'Заметка', /замет|коммент|примеч|note|comment|^not$/i],
+    ],
+    teachers: [
+      ['name', 'Имя *', /имя|фио|преподав|учител|teacher|name|öğretmen|hoca/i],
+      ['subject', 'Предмет', /предмет|subject|ders|курс/i],
+      ['rate', 'Оклад или ставка', /оклад|ставк|сумма|зарпл|rate|salary|maaş|ücret/i],
+      ['perLesson', 'За занятие? (да/нет)', /за заняти|per lesson|ders başı/i],
+      ['payDay', 'День выплаты', /день выплат|число|pay ?day/i],
+      ['nextDue', 'Дата следующей выплаты', /следующ|дата выплат|due|next/i],
+      ['lessonsDone', 'Проведено занятий', /провед|занятий|lessons|ders sayısı/i],
+      ['phone', 'Телефон', /тел|phone|telefon/i],
+      ['notes', 'Заметка', /замет|коммент|примеч|note|comment/i],
+    ],
+    expenses: [['category', 'Категория *', /категор|category|статья|расход|kategori|month/i]],
+    payments: [
+      ['date', 'Дата *', /дата|date|tarih/i],
+      ['name', 'Кто / что *', /кто|имя|ученик|name|назван|student|isim/i],
+      ['amount', 'Сумма *', /сумма|amount|tutar|price/i],
+      ['kind', 'Тип (доход / расход)', /тип|вид|kind|type|tür/i],
+      ['category', 'Категория / группа', /категор|групп|category|group/i],
+      ['note', 'Комментарий', /коммент|замет|примеч|note|comment/i],
+    ],
+  };
+  const MONTH_NAMES = {
+    1: ['янв', 'jan', 'oca'], 2: ['фев', 'feb', 'şub', 'sub'], 3: ['мар', 'mar'], 4: ['апр', 'apr', 'nis'], 5: ['май', 'мая', 'may'], 6: ['июн', 'jun', 'haz'],
+    7: ['июл', 'jul', 'tem'], 8: ['авг', 'aug', 'ağu', 'agu'], 9: ['сен', 'sep', 'eyl'], 10: ['окт', 'oct', 'eki'], 11: ['ноя', 'nov', 'kas'], 12: ['дек', 'dec', 'ara'],
+  };
+  const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+  function parseCSV(text) {
+    text = text.replace(/^﻿/, '');
+    const firstLine = text.split(/\r?\n/)[0] || '';
+    const delim = [',', ';', '\t'].map((d) => [d, (firstLine.match(new RegExp(d === '\t' ? '\t' : '\\' + d, 'g')) || []).length]).sort((a, b) => b[1] - a[1])[0][0];
+    const rows = []; let row = [], cell = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
+      else if (c === '"') q = true;
+      else if (c === delim) { row.push(cell); cell = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+      else cell += c;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter((r) => r.some((c) => c.trim() !== ''));
+  }
+  function parseNum(v) {
+    if (v == null) return null;
+    let s = String(v).trim().replace(/[^\d,.\-−]/g, '').replace('−', '-');
+    if (!s) return null;
+    if (s.includes(',') && s.includes('.')) s = s.lastIndexOf(',') > s.lastIndexOf('.') ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+    else if (s.includes(',')) s = /,\d{3}$/.test(s) && !/,\d{1,2}$/.test(s) ? s.replace(/,/g, '') : s.replace(',', '.');
+    const n = Number(s); return isNaN(n) ? null : n;
+  }
+  function parseDateCell(v) {
+    const s = String(v || '').trim(); if (!s) return null;
+    let m;
+    if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+    if ((m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})/))) return `${m[3].length === 2 ? '20' + m[3] : m[3]}-${pad(m[2])}-${pad(m[1])}`;
+    if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/))) { let a = +m[1], b = +m[2]; const y = m[3].length === 2 ? '20' + m[3] : m[3]; const [mo, d] = a > 12 ? [b, a] : [a, b]; return `${y}-${pad(mo)}-${pad(d)}`; }
+    if ((m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/))) return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+    const d = new Date(s); if (!isNaN(d)) return fmtISO(d);
+    return null;
+  }
+  function parseMonthHeader(v) {
+    const s = norm(v); if (!s) return null;
+    let m;
+    if ((m = s.match(/^(\d{4})-(\d{1,2})/))) return `${m[1]}-${pad(m[2])}`;
+    if ((m = s.match(/^(\d{1,2})[./](\d{4})$/))) return `${m[2]}-${pad(m[1])}`;
+    const iso = parseDateCell(s); if (iso && /\d{4}/.test(s)) return iso.slice(0, 7);
+    for (const [num, names] of Object.entries(MONTH_NAMES)) {
+      if (names.some((n) => s.startsWith(n))) { const y = (s.match(/(\d{2,4})\s*$/) || [])[1]; const year = y ? (y.length === 2 ? '20' + y : y) : String(new Date().getFullYear()); return `${year}-${pad(num)}`; }
+    }
+    return null;
+  }
+  function toCsvUrl(url) {
+    url = String(url || '').trim();
+    let m;
+    if ((m = url.match(/docs\.google\.com\/spreadsheets\/d\/e\/([^/]+)\/pub/))) { const gid = (url.match(/[?&#]gid=(\d+)/) || [])[1]; return `https://docs.google.com/spreadsheets/d/e/${m[1]}/pub?output=csv${gid ? '&gid=' + gid : ''}`; }
+    if ((m = url.match(/docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/))) { const gid = (url.match(/[?&#]gid=(\d+)/) || [])[1]; return `https://docs.google.com/spreadsheets/d/${m[1]}/gviz/tq?tqx=out:csv${gid ? '&gid=' + gid : ''}`; }
+    return url;
+  }
+  async function fetchSheetCSV(url) {
+    const csvUrl = toCsvUrl(url);
+    const check = (t) => { if (/<html|<!doctype/i.test(t.slice(0, 300))) throw new Error('html'); return t; };
+    try { const r = await fetch(csvUrl, { cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status); return check(await r.text()); }
+    catch (e1) {
+      let r;
+      try { r = await fetch('/api/sheet?url=' + encodeURIComponent(csvUrl), { cache: 'no-store' }); } catch { throw new Error('Не удалось загрузить таблицу. Проверьте доступ: Файл → Поделиться → «Все, у кого есть ссылка» (Читатель).'); }
+      if (!r.ok) { let msg = ''; try { msg = (await r.json()).error; } catch { /* ignore */ } throw new Error(msg || 'Не удалось загрузить таблицу. Проверьте ссылку и доступ: Файл → Поделиться → «Все, у кого есть ссылка» (Читатель).'); }
+      return check(await r.text());
+    }
+  }
+  function autoMapping(type, headers) {
+    const map = {}; const used = new Set();
+    (SHEET_FIELDS[type] || []).forEach(([f, , re]) => { const i = headers.findIndex((h, idx) => !used.has(idx) && re.test(norm(h))); if (i >= 0) { map[f] = i; used.add(i); } });
+    const must = { students: 'name', teachers: 'name', expenses: 'category', payments: 'name' }[type];
+    if (must && map[must] == null) map[must] = 0;
+    return map;
+  }
+  const defaultProjectId = () => ui.project !== 'all' ? ui.project : (state.projects[0] || {}).id || '';
+  function ensureGroup(name, projectId) {
+    let g = state.groups.find((x) => norm(x.name) === norm(name));
+    if (!g) { g = { id: uid(), name: name.trim(), projectId, teacherId: '', subject: '', schedule: '', payType: 'monthly', price: 0, payDay: 1, lessonsInPackage: 8, notes: '', archived: false }; state.groups.push(g); }
+    return g;
+  }
+  function ensureTeacher(name, projectId) {
+    let t = state.teachers.find((x) => norm(x.name) === norm(name));
+    if (!t) { t = { id: uid(), name: name.trim(), projectId, subject: '', payType: 'monthly', rate: 0, payDay: 5, nextDue: nextDateForDay(5), lessonsDone: 0, phone: '', notes: '', lastPaid: null, archived: false }; state.teachers.push(t); }
+    return t;
+  }
+  const isPaidWord = (v) => /оплач|paid|ödendi|^да$|^yes$|^\+$|✓|✔|^ok$|^1$|true/i.test(norm(v));
+
+  function applySheet(src, rows) {
+    const headers = rows[0] || []; const body = rows.slice(1);
+    const m = src.mapping || {};
+    const col = (row, f) => (m[f] != null && m[f] !== '' ? String(row[m[f]] ?? '').trim() : null);
+    const projectId = src.projectId || defaultProjectId();
+    const res = { created: 0, updated: 0, archived: 0, payments: 0 };
+    if (src.type === 'students') {
+      const seen = new Set();
+      body.forEach((row) => {
+        const name = col(row, 'name'); if (!name || /^(итого|total|всего)$/i.test(name)) return;
+        seen.add(norm(name));
+        let s = state.students.find((x) => norm(x.name) === norm(name));
+        const isNew = !s;
+        if (isNew) { s = { id: uid(), name, groupId: '', projectId, teacherId: '', subject: '', payType: 'monthly', price: 0, payDay: 1, nextDue: null, lessonsInPackage: 8, lessonsLeft: 0, phone: '', notes: '', lastPaid: null, remindedAt: null, archived: false }; state.students.push(s); res.created++; } else { res.updated++; if (s.archived) res.archived--; }
+        s.sourceId = src.id; s.archived = false;
+        const gName = col(row, 'group');
+        if (gName) { const g = ensureGroup(gName, s.projectId || projectId); s.groupId = g.id; if (isNew) { s.payType = g.payType; s.price = g.price; s.payDay = g.payDay; s.lessonsInPackage = g.lessonsInPackage; s.lessonsLeft = g.lessonsInPackage; if (!s.subject) s.subject = g.subject; if (!s.teacherId) s.teacherId = g.teacherId; } }
+        const tName = col(row, 'teacher'); if (tName) s.teacherId = ensureTeacher(tName, s.projectId || projectId).id;
+        const subject = col(row, 'subject'); if (subject) s.subject = subject;
+        const price = parseNum(col(row, 'price')); if (price != null) s.price = Math.abs(price);
+        const payDay = parseNum(col(row, 'payDay')); if (payDay != null && payDay >= 1 && payDay <= 31) s.payDay = Math.round(payDay);
+        const lip = parseNum(col(row, 'lessonsInPackage')); if (lip != null && lip > 0) { s.lessonsInPackage = Math.round(lip); s.payType = 'package'; }
+        const left = parseNum(col(row, 'lessonsLeft')); if (left != null) { s.lessonsLeft = Math.max(0, Math.round(left)); if (m.lessonsInPackage == null) s.payType = 'package'; }
+        const phone = col(row, 'phone'); if (phone) s.phone = phone;
+        const notes = col(row, 'notes'); if (notes != null && (notes || isNew)) s.notes = notes;
+        const lastPaid = parseDateCell(col(row, 'lastPaid')); if (lastPaid) s.lastPaid = lastPaid;
+        const nextDue = parseDateCell(col(row, 'nextDue'));
+        const status = col(row, 'status');
+        if (s.payType === 'monthly') {
+          if (nextDue) s.nextDue = nextDue;
+          else if (status != null && status !== '') {
+            const thisMonth = fmtISO(new Date(new Date().getFullYear(), new Date().getMonth(), Math.min(s.payDay, daysInMonth(new Date().getFullYear(), new Date().getMonth()))));
+            s.nextDue = isPaidWord(status) ? addMonths(thisMonth, 1, s.payDay) : thisMonth;
+            if (isPaidWord(status)) s.remindedAt = null;
+          } else if (lastPaid && (isNew || !s.nextDue)) s.nextDue = addMonths(lastPaid, 1, s.payDay);
+          else if (!s.nextDue) s.nextDue = nextDateForDay(s.payDay);
+        }
+        const g = groupById(s.groupId);
+        if (g && !g.price && s.price) { g.price = s.price; g.payType = s.payType; g.payDay = s.payDay; g.lessonsInPackage = s.lessonsInPackage; }
+        if (g && !g.teacherId && s.teacherId) g.teacherId = s.teacherId;
+        if (g && !g.subject && s.subject) g.subject = s.subject;
+      });
+      if (src.archiveMissing) state.students.forEach((x) => { if (x.sourceId === src.id && !x.archived && !seen.has(norm(x.name))) { x.archived = true; res.archived++; } });
+    } else if (src.type === 'teachers') {
+      const seen = new Set();
+      body.forEach((row) => {
+        const name = col(row, 'name'); if (!name) return;
+        seen.add(norm(name));
+        let t = state.teachers.find((x) => norm(x.name) === norm(name));
+        if (!t) { t = ensureTeacher(name, projectId); res.created++; } else res.updated++;
+        t.sourceId = src.id; t.archived = false;
+        const subject = col(row, 'subject'); if (subject) t.subject = subject;
+        const rate = parseNum(col(row, 'rate')); if (rate != null) t.rate = Math.abs(rate);
+        const per = col(row, 'perLesson'); if (per != null && per !== '') t.payType = isPaidWord(per) || /заня|lesson|ders/i.test(per) ? 'perLesson' : 'monthly';
+        const payDay = parseNum(col(row, 'payDay')); if (payDay != null && payDay >= 1 && payDay <= 31) { t.payDay = Math.round(payDay); if (m.nextDue == null) t.nextDue = nextDateForDay(t.payDay); }
+        const nextDue = parseDateCell(col(row, 'nextDue')); if (nextDue) t.nextDue = nextDue;
+        const done = parseNum(col(row, 'lessonsDone')); if (done != null) t.lessonsDone = Math.max(0, Math.round(done));
+        const phone = col(row, 'phone'); if (phone) t.phone = phone;
+        const notes = col(row, 'notes'); if (notes) t.notes = notes;
+      });
+      if (src.archiveMissing) state.teachers.forEach((x) => { if (x.sourceId === src.id && !x.archived && !seen.has(norm(x.name))) { x.archived = true; res.archived++; } });
+    } else if (src.type === 'expenses') {
+      state.payments = state.payments.filter((p) => p.sourceId !== src.id);
+      const catCol = m.category != null ? Number(m.category) : 0;
+      const monthCols = headers.map((h, i) => (i === catCol ? null : parseMonthHeader(h))).map((ym, i) => (ym ? { i, ym } : null)).filter(Boolean);
+      body.forEach((row) => {
+        const cat = String(row[catCol] ?? '').trim(); if (!cat || /^(итого|total|всего|sum|toplam)/i.test(cat)) return;
+        monthCols.forEach(({ i, ym }) => {
+          const n = parseNum(row[i]); if (!n) return;
+          addPayment({ kind: 'expense', date: ym + '-01', amount: Math.abs(n), personId: '', personName: cat, category: cat, projectId, note: 'из Google Таблицы', sourceId: src.id });
+          res.payments++;
+        });
+      });
+      res.months = monthCols.length;
+    } else if (src.type === 'payments') {
+      state.payments = state.payments.filter((p) => p.sourceId !== src.id);
+      body.forEach((row) => {
+        const date = parseDateCell(col(row, 'date')); const name = col(row, 'name'); const amount = parseNum(col(row, 'amount'));
+        if (!date || !name || amount == null || amount === 0) return;
+        const kindCell = norm(col(row, 'kind') || '');
+        const student = state.students.find((x) => norm(x.name) === norm(name));
+        const teacher = state.teachers.find((x) => norm(x.name) === norm(name));
+        let kind;
+        if (/зарпл|salary|maaş|выплат/.test(kindCell)) kind = 'salary';
+        else if (/расход|expense|gider|трат/.test(kindCell)) kind = 'expense';
+        else if (/доход|income|приход|gelir|оплат/.test(kindCell)) kind = student ? 'income' : 'otherIncome';
+        else if (amount < 0) kind = teacher ? 'salary' : 'expense';
+        else kind = student ? 'income' : teacher ? 'salary' : 'otherIncome';
+        const cat = col(row, 'category') || (kind === 'salary' ? 'Зарплаты' : kind === 'expense' ? name : (student && groupById(student.groupId) || {}).name || '');
+        addPayment({ kind, date, amount: Math.abs(amount), personId: student ? student.id : teacher ? teacher.id : '', personName: name, category: cat, projectId: (student || teacher || {}).projectId || projectId, note: col(row, 'note') || '', sourceId: src.id });
+        res.payments++;
+      });
+      state.payments.sort((a, b) => b.date.localeCompare(a.date));
+    }
+    src.lastSync = new Date().toISOString(); src.lastResult = res; src.lastError = '';
+    return res;
+  }
+  function resultText(src) {
+    const r = src.lastResult || {}; const parts = [];
+    if (src.type === 'students' || src.type === 'teachers') { parts.push(`новых ${r.created || 0}`, `обновлено ${r.updated || 0}`); if (r.archived) parts.push(`в архив ${r.archived}`); }
+    else { parts.push(`записей ${r.payments || 0}`); if (r.months != null) parts.push(`месяцев ${r.months}`); }
+    return parts.join(', ');
+  }
+  async function syncSheet(src, silent) {
+    try {
+      const rows = parseCSV(await fetchSheetCSV(src.url));
+      if (rows.length < 2) throw new Error('В таблице нет строк с данными.');
+      applySheet(src, rows); save(); render();
+      if (!silent) toast(`${src.name}: ${resultText(src)}`);
+      return true;
+    } catch (e) {
+      src.lastError = e.message || String(e); save(); render();
+      if (!silent) toast(`${src.name}: ${src.lastError}`);
+      return false;
+    }
+  }
+  async function syncAll(silent) {
+    const list = (state.settings.sheets || []).filter((s) => s.enabled !== false);
+    if (!list.length) return;
+    const btn = document.getElementById('sync-btn'); if (btn) btn.disabled = true;
+    let ok = 0; for (const src of list) { if (await syncSheet(src, true)) ok++; }
+    if (btn) btn.disabled = false;
+    if (!silent) toast(ok === list.length ? `Обновлено из ${ok} ${plural(ok, 'таблицы', 'таблиц', 'таблиц')}` : `Обновлено ${ok} из ${list.length}: ${list.filter((s) => s.lastError).map((s) => s.name + ' — ' + s.lastError).join('; ')}`);
+  }
+  function sheetSourceForm(src) {
+    const isNew = !src;
+    src = src || { url: '', type: 'students', autoSync: true, archiveMissing: true, mapping: null };
+    const html = `
+      <div class="form-grid">
+        ${field('Ссылка на Google Таблицу', inp('url', src.url, 'url', 'required placeholder="https://docs.google.com/spreadsheets/d/…/edit#gid=…"'), true)}
+        ${field('Что в этом листе', `<select name="type">${Object.entries(SHEET_TYPES).map(([k, v]) => `<option value="${k}" ${src.type === k ? 'selected' : ''}>${v}</option>`).join('')}</select>`)}
+        ${field('Проект', projectSelect('projectId', src.projectId))}
+      </div>
+      <p class="form-note">Скопируйте ссылку из адресной строки, открыв нужный лист — в ней будет <code>gid</code> листа. Доступ: Файл → Поделиться → «Все, у кого есть ссылка» (Читатель), либо Файл → Опубликовать в интернете.</p>`;
+    openModal(isNew ? 'Подключить Google Таблицу' : 'Google Таблица', html, async (d) => {
+      const btn = modalForm.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Загружаю…';
+      try {
+        const rows = parseCSV(await fetchSheetCSV(d.url));
+        if (rows.length < 1) throw new Error('Таблица пустая.');
+        const draft = Object.assign({ id: uid(), name: '', autoSync: true, archiveMissing: true, enabled: true }, src, { url: d.url.trim(), type: d.type, projectId: d.projectId || '' });
+        if (!draft.mapping || draft.type !== src.type) draft.mapping = autoMapping(draft.type, rows[0]);
+        sheetMappingForm(draft, rows, isNew);
+      } catch (e) { btn.disabled = false; btn.textContent = 'Загрузить'; toast(e.message || 'Ошибка загрузки'); }
+    }, 'Загрузить');
+  }
+  function sheetMappingForm(draft, rows, isNew) {
+    const headers = rows[0]; const sample = rows.slice(1, 6);
+    const colOpts = (sel) => `<option value="">— нет —</option>` + headers.map((h, i) => `<option value="${i}" ${String(sel) === String(i) ? 'selected' : ''}>${esc(h || `Колонка ${i + 1}`)}</option>`).join('');
+    const fields = SHEET_FIELDS[draft.type] || [];
+    let extra = '';
+    if (draft.type === 'expenses') {
+      const months = headers.map((h) => parseMonthHeader(h)).filter(Boolean);
+      extra = `<p class="form-note">Месяцы распознаны в заголовках: ${months.length ? months.map(ymLabel).join(', ') : '<b>ни одного</b> — заголовки колонок должны быть датами или названиями месяцев (June, Июнь, 06.2026)'}.</p>`;
+    }
+    const html = `
+      <p class="small muted">Лист: ${headers.length} ${plural(headers.length, 'колонка', 'колонки', 'колонок')}, ${rows.length - 1} ${plural(rows.length - 1, 'строка', 'строки', 'строк')} с данными. Укажите, какая колонка что означает (поля со * обязательны).</p>
+      <div class="form-grid">
+        ${field('Название подключения', inp('name', draft.name || SHEET_TYPES[draft.type], 'text', 'required'), true)}
+        ${fields.map(([f, label]) => field(label, `<select name="map_${f}">${colOpts(draft.mapping[f])}</select>`)).join('')}
+      </div>${extra}
+      <div class="table-wrap mt"><table class="small"><thead><tr>${headers.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${sample.map((r) => `<tr>${headers.map((_, i) => `<td>${esc(r[i] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <div class="mt"><label class="small"><input type="checkbox" name="autoSync" ${draft.autoSync ? 'checked' : ''}> Обновлять при каждом открытии сайта</label></div>
+      ${draft.type === 'students' || draft.type === 'teachers' ? `<div><label class="small"><input type="checkbox" name="archiveMissing" ${draft.archiveMissing ? 'checked' : ''}> Отправлять в архив тех, кого больше нет в таблице</label></div>` : ''}
+      <p class="form-note mt">${draft.type === 'students' ? 'Ученики сопоставляются по имени. Данные из таблицы обновляют карточку, а история оплат остаётся на сайте. Если в таблице есть колонка «Статус» (оплачено/нет) — дата следующей оплаты выставится по ней.' : draft.type === 'expenses' ? 'Расходы из этого листа заменяются целиком при каждом обновлении; записи, добавленные вручную на сайте, остаются.' : draft.type === 'payments' ? 'Записи из этого листа заменяются при каждом обновлении. Если имя совпадает с учеником — это его оплата, с преподавателем — зарплата.' : 'Преподаватели сопоставляются по имени.'}</p>`;
+    openModal('Соответствие колонок', html, (d) => {
+      const mapping = {}; fields.forEach(([f]) => { if (d[`map_${f}`] !== '' && d[`map_${f}`] != null) mapping[f] = Number(d[`map_${f}`]); });
+      const must = { students: 'name', teachers: 'name', expenses: 'category', payments: 'name' }[draft.type];
+      if (mapping[must] == null) { toast('Укажите обязательную колонку'); return; }
+      Object.assign(draft, { name: d.name.trim(), mapping, autoSync: !!d.autoSync, archiveMissing: !!d.archiveMissing });
+      state.settings.sheets = state.settings.sheets || [];
+      const i = state.settings.sheets.findIndex((s) => s.id === draft.id);
+      if (i >= 0) state.settings.sheets[i] = draft; else state.settings.sheets.push(draft);
+      closeModal();
+      try { applySheet(draft, rows); save(); render(); toast(`${draft.name}: ${resultText(draft)}`); }
+      catch (e) { draft.lastError = e.message; save(); render(); toast('Ошибка: ' + e.message); }
+    }, isNew ? 'Подключить и загрузить' : 'Сохранить и обновить');
+  }
+  function renderSheetsSection() {
+    const list = state.settings.sheets || [];
+    return `<section class="card"><div class="card-head"><h2>Google Таблицы</h2><button class="btn sm primary" data-act="add-sheet">+ Подключить</button></div>
+      ${list.length ? `<div class="list">${list.map((s) => `<div class="row ${s.lastError ? 'is-overdue' : ''}"><div class="row-main"><div class="row-title">${esc(s.name)} <span class="badge muted">${SHEET_TYPES[s.type] || s.type}</span>${s.autoSync ? '<span class="badge muted">авто</span>' : ''}</div>
+        <div class="row-sub">${s.lastError ? `<span style="color:var(--overdue)">${esc(s.lastError)}</span>` : s.lastSync ? `Обновлено ${new Date(s.lastSync).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · ${resultText(s)}` : 'Ещё не обновлялось'} · <a href="${esc(s.url)}" target="_blank" rel="noopener">открыть таблицу</a></div></div>
+        <div class="row-actions"><button class="btn sm good" data-act="sync-sheet" data-id="${s.id}">Обновить</button><button class="btn sm" data-act="edit-sheet" data-id="${s.id}">✎</button><button class="btn sm danger" data-act="del-sheet" data-id="${s.id}">✕</button></div></div>`).join('')}</div>`
+      : `<p class="small muted">Подключите лист Google Таблицы — сайт будет брать из него учеников, преподавателей, расходы или журнал платежей. Нужен доступ по ссылке на чтение. Колонки сопоставляются автоматически по заголовкам (Имя, Группа, Цена, Дата оплаты, Статус…) и их можно поправить вручную.</p>`}
+    </section>`;
+  }
+  function updateSyncButton() {
+    const btn = document.getElementById('sync-btn'); if (!btn) return;
+    const list = (state.settings.sheets || []).filter((s) => s.enabled !== false);
+    btn.hidden = !list.length;
+    const last = list.map((s) => s.lastSync).filter(Boolean).sort().pop();
+    btn.title = last ? `Последнее обновление: ${new Date(last).toLocaleString('ru-RU')}` : 'Обновить данные из Google Таблиц';
+    btn.classList.toggle('has-error', list.some((s) => s.lastError));
+  }
+
   // ---------- События ----------
   document.querySelector('.tabs').addEventListener('click', (e) => { const b = e.target.closest('.tab'); if (!b) return; activeTab = b.dataset.tab; render(); window.scrollTo(0, 0); });
   document.getElementById('project-filter').addEventListener('change', (e) => { ui.project = e.target.value; ui.studentGroup = 'all'; render(); });
@@ -927,6 +1254,10 @@
     const btn = e.target.closest('[data-act]'); if (!btn) return;
     const { act, id } = btn.dataset;
     switch (act) {
+      case 'add-sheet': sheetSourceForm(null); break;
+      case 'edit-sheet': sheetSourceForm((state.settings.sheets || []).find((x) => x.id === id)); break;
+      case 'sync-sheet': { const src = (state.settings.sheets || []).find((x) => x.id === id); if (src) syncSheet(src, false); break; }
+      case 'del-sheet': { const src = (state.settings.sheets || []).find((x) => x.id === id); if (!src) break; if (!confirm(`Отключить «${src.name}»? Загруженные данные останутся на сайте, но обновляться не будут.`)) break; state.settings.sheets = state.settings.sheets.filter((x) => x.id !== id); save(); render(); toast('Таблица отключена'); break; }
       case 'add-project': projectForm(null); break;
       case 'edit-project': projectForm(byId(state.projects, id)); break;
       case 'del-project': {
@@ -982,6 +1313,9 @@
     if (e.target.matches('[data-import]') && e.target.files[0]) importJSON(e.target.files[0]);
   });
 
+  document.getElementById('sync-btn').addEventListener('click', () => syncAll(false));
+
   applyTheme();
   render();
+  if ((state.settings.sheets || []).some((x) => x.autoSync && x.enabled !== false)) syncAll(true);
 })();
