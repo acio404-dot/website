@@ -421,10 +421,12 @@
     if (kind === 'income') note = p.payType === 'package' ? `После оплаты добавится ${p.lessonsInPackage} ${plural(p.lessonsInPackage, 'занятие', 'занятия', 'занятий')}.` : `Следующая оплата сдвинется на ${fmtDate(addMonths(p.nextDue, 1, p.payDay))}.`;
     else if (kind === 'payout') note = `${it.kind === 'group' ? 'Группа' : 'Индивидуально'}: ${esc(it.name)} · ${payoutText(it)}. Следующая выплата сдвинется на ${fmtDate(addMonths(it.nextDue, 1, it.pay.payDay))}.`;
     else note = `Следующая выплата сдвинется на ${fmtDate(addMonths(p.nextDue, 1, p.payDay))}.${p.payType === 'perLesson' ? ' Счётчик занятий обнулится.' : ''}`;
-    const html = `<div class="form-grid">${field('Сумма', inp('amount', amount, 'number', 'required min="0" step="0.01"'))}${field('Дата', inp('date', todayISO(), 'date', 'required'))}${field('Комментарий', inp('note', '', 'text', 'placeholder="перевод на карту, наличные…"'), true)}</div><p class="form-note">${note}</p>`;
+    const remember = kind === 'payout' && it.pay.mode !== 'percent' ? `<div class="field span-2"><label class="small"><input type="checkbox" name="remember" checked> Запомнить введённую сумму как оплату преподавателю за ${it.kind === 'group' ? 'эту группу' : 'этого ученика'} на будущее</label></div>` : '';
+    const html = `<div class="form-grid">${field('Сумма', inp('amount', amount, 'number', 'required min="0" step="0.01"'))}${field('Дата', inp('date', todayISO(), 'date', 'required'))}${field('Комментарий', inp('note', '', 'text', 'placeholder="перевод на карту, наличные…"'), true)}${remember}</div><p class="form-note">${note}</p>`;
     const title = kind === 'income' ? `Оплата: ${p.name}` : kind === 'salary' ? `Выплата: ${p.name}` : kind === 'payout' ? `Выплата: ${p.name} за ${it.name}` : `Оплата: ${p.name}`;
     openModal(title, html, (d) => {
       closeModal();
+      if (kind === 'payout' && d.remember && it.pay.mode !== 'percent' && Number(d.amount) !== Number(it.pay.amount)) it.pay.amount = Number(d.amount) || 0;
       if (kind === 'income') markStudentPaid(id, d.amount, d.date, d.note); else if (kind === 'salary') markTeacherPaid(id, d.amount, d.date, d.note); else if (kind === 'payout') markPayoutPaid(id, d.amount, d.date, d.note); else markRecurringPaid(id, d.amount, d.date, d.note);
     }, 'Записать');
   }
