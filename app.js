@@ -4,6 +4,7 @@
   'use strict';
 
   const STORAGE_KEY = 'edu-finance-v1';
+  const SEED_VERSION = 2; // версия данных из таблицы Finances
   const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
   const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
   const MONTHS_IN = ['январе', 'феврале', 'марте', 'апреле', 'мае', 'июне', 'июле', 'августе', 'сентябре', 'октябре', 'ноябре', 'декабре'];
@@ -473,6 +474,7 @@
         <p class="small muted mt">Первая кнопка переносит данные из файла Finances: 6 групп, учеников с оплатами за июнь–октябрь, преподавателей, расходы по категориям и подписки.</p>
         </div></div>`;
     }
+    const banner = state.seedVersion !== SEED_VERSION && !(state.settings.sheets || []).length ? `<div class="card banner"><div><strong>Есть новые данные из таблицы Finances</strong><div class="small muted">6 групп, ученики с оплатами за июнь–октябрь, преподаватели, расходы по категориям. Загрузка заменит текущие данные на сайте.</div></div><div class="toolbar"><button class="btn primary" data-act="seed-mine">Загрузить</button><button class="btn" data-act="dismiss-banner">Скрыть</button></div></div>` : '';
     const dueStudents = students.filter((s) => needsAction(studentStatus(s))).sort((a, b) => STATUS_ORDER[studentStatus(a)] - STATUS_ORDER[studentStatus(b)] || (a.nextDue || '').localeCompare(b.nextDue || ''));
     const outs = [
       ...teachers.filter((t) => teacherAmount(t) > 0 && needsAction(teacherStatus(t))).map((t) => ({ kind: 'salary', st: teacherStatus(t), due: t.nextDue, amount: teacherAmount(t), html: teacherRow(t) })),
@@ -499,7 +501,7 @@
       return { g, n: gs.length, due: due.length, overdue: due.filter((s) => studentStatus(s) === 'overdue').length, sum: due.reduce((a, s) => a + studentAmount(s), 0), expected: gs.reduce((a, s) => a + studentAmount(s), 0) };
     }).sort((a, b) => b.overdue - a.overdue || b.due - a.due);
 
-    return `
+    return `${banner}
       <div class="tiles">
         <div class="tile is-hero"><div class="label">Собрать с учеников сейчас</div><div class="value">${money(collect)}</div><div class="delta">${dueStudents.length} ${plural(dueStudents.length, 'ученик', 'ученика', 'учеников')}${overdueStudents ? `, просрочено ${overdueStudents}` : ''}</div></div>
         <div class="tile"><div class="label">Выплатить и оплатить</div><div class="value">${money(payout)}</div><div class="delta">${outs.length} ${plural(outs.length, 'платёж', 'платежа', 'платежей')}${overdueOuts ? `, просрочено ${overdueOuts}` : ''}</div></div>
@@ -980,7 +982,7 @@
     const R = (id, name, amount) => ({ id, name, projectId: 'p-tr', amount, payDay: 1, nextDue: `${Y}-11-01`, notes: '', lastPaid: `${Y}-10-01`, archived: false });
     const recurring = [R('r-ig', 'Instagram subscription', 8), R('r-tg', 'Telegram premium', 4), R('r-zoom', 'Zoom - sub', 23.14)];
     payments.sort((a, b) => b.date.localeCompare(a.date));
-    state = Object.assign(defaultState(), { settings: Object.assign(defaultState().settings, { currency: '$', remindDays: 7, theme }), projects, groups, students, teachers, recurring, payments });
+    state = Object.assign(defaultState(), { settings: Object.assign(defaultState().settings, { currency: '$', remindDays: 7, theme }), projects, groups, students, teachers, recurring, payments, seedVersion: SEED_VERSION });
     ui.project = 'all';
     save(); render(); toast('Данные TR-YOS Zone из таблицы загружены');
   }
@@ -1368,6 +1370,7 @@
       case 'export-csv': exportCSV(); break;
       case 'export-expenses': exportExpenses(); break;
       case 'seed-mine': if ((!state.students.length && !state.payments.length) || confirm('Заменить текущие данные данными TR-YOS Zone из таблицы Finances?')) seedMine(); break;
+      case 'dismiss-banner': state.seedVersion = SEED_VERSION; save(); render(); break;
       case 'wipe': if (confirm('Удалить все данные без возможности восстановления?')) { state = defaultState(); ui.project = 'all'; save(); render(); toast('Данные удалены'); } break;
     }
   });
@@ -1387,7 +1390,9 @@
 
   document.getElementById('sync-btn').addEventListener('click', () => syncAll(false));
 
+  // Старый набор данных (только расходы за июнь из Numbers) заменяем новым автоматически
+  const oldSeedOnly = !state.students.length && !state.groups.length && !state.teachers.length && state.payments.length > 0 && state.payments.every((p) => p.note === 'из таблицы Numbers');
   applyTheme();
-  render();
+  if (oldSeedOnly) seedMine(); else render();
   if ((state.settings.sheets || []).some((x) => x.autoSync && x.enabled !== false)) syncAll(true);
 })();

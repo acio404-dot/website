@@ -287,3 +287,4 @@ table.pay-table td.pcell.due:hover { filter: brightness(.95); }
 table.pay-table td .name { font-weight: 600; }
 table.matrix tfoot tr.net td { border-top: 2px solid var(--border); }
 table.matrix .neg { color: var(--overdue); }
+.card.banner { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--accent-soft); }
