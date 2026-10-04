@@ -2,51 +2,49 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>TR-YOS Zone · Финансы</title>
-  <meta name="description" content="Дашборд директора учебного центра: кому напомнить об оплате и кому выплатить зарплату.">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M8 20h4v5H8zm6-6h4v11h-4zm6-7h4v18h-4z' fill='%23fff'/%3E%3C/svg%3E">
+  <meta name="description" content="Финансы учебного центра: оплаты учеников, зарплаты преподавателей, расходы и прибыль.">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#f4f4f1" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f0f0e" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Финансы">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="styles.css">
+  <link rel="modulepreload" href="vendor.js">
+  <link rel="modulepreload" href="core.js">
+  <link rel="modulepreload" href="store.js">
+  <link rel="modulepreload" href="ui.js">
+  <link rel="modulepreload" href="quick.js">
+  <link rel="modulepreload" href="forms.js">
+  <link rel="modulepreload" href="home.js">
+  <link rel="modulepreload" href="demo.js">
+  <link rel="modulepreload" href="students.js">
+  <link rel="modulepreload" href="groups.js">
+  <link rel="modulepreload" href="finance.js">
+  <link rel="modulepreload" href="calendar.js">
+  <link rel="modulepreload" href="settings.js">
+  <link rel="modulepreload" href="sheets.js">
+  <script>
+    // Тема и акцент применяются до первой отрисовки, чтобы страница не мигала.
+    try {
+      var raw = localStorage.getItem('tryos-finance-v2') || localStorage.getItem('edu-finance-v1');
+      var s = (raw && JSON.parse(raw).settings) || {}, r = document.documentElement;
+      if (s.theme === 'light' || s.theme === 'dark') r.dataset.theme = s.theme;
+      if (s.accent) r.dataset.accent = s.accent;
+      if (s.density) r.dataset.density = s.density;
+    } catch (e) { /* настройки по умолчанию */ }
+  </script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo" aria-hidden="true"></span>
-      <div>
-        <div class="brand-title">TR-YOS Zone · Финансы</div>
-        <div class="brand-sub" id="today-label"></div>
-      </div>
-    </div>
-    <div class="topbar-right">
-      <button id="sync-btn" class="btn sm" title="Обновить из Google Таблиц" hidden>⟳ Обновить</button>
-      <select id="project-filter" class="input sm" aria-label="Проект" hidden></select>
-      <nav class="tabs" role="tablist">
-        <button class="tab is-active" data-tab="overview" role="tab">Обзор</button>
-        <button class="tab" data-tab="groups" role="tab">Группы</button>
-        <button class="tab" data-tab="students" role="tab">Ученики</button>
-        <button class="tab" data-tab="teachers" role="tab">Преподаватели</button>
-        <button class="tab" data-tab="expenses" role="tab">Помесячно</button>
-        <button class="tab" data-tab="calendar" role="tab">Календарь</button>
-        <button class="tab" data-tab="history" role="tab">История</button>
-        <button class="tab" data-tab="settings" role="tab">Настройки</button>
-      </nav>
-    </div>
-  </header>
-
-  <main id="view" class="view"></main>
-
-  <div class="modal-backdrop" id="modal" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <div class="modal-head">
-        <h2 id="modal-title"></h2>
-        <button class="icon-btn" id="modal-close" aria-label="Закрыть">×</button>
-      </div>
-      <form id="modal-form" class="modal-body"></form>
-    </div>
-  </div>
-
-  <div class="toast" id="toast" hidden></div>
-
-  <script src="app.js"></script>
+  <div id="app"><noscript><p style="padding:24px;font-family:system-ui">Дашборду нужен JavaScript — включите его в настройках браузера.</p></noscript></div>
+  <script type="module" src="app.js"></script>
+  <script nomodule>document.getElementById('app').innerHTML = '<p style="padding:24px;font-family:system-ui">Этот браузер слишком старый для дашборда. Откройте сайт в свежей версии Chrome, Safari или Firefox.</p>';</script>
 </body>
 </html>
