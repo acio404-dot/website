@@ -385,6 +385,14 @@ export const store = {
   snapshots() {
     return this.snapshotKeys().reverse().map((k) => { try { const s = JSON.parse(this.storage.getItem(k)); return { key: k, at: when(s.at), reason: str(s.reason), students: (s.state.students || []).length, payments: (s.state.payments || []).length }; } catch { return null; } }).filter((x) => x && x.at);
   },
+  /** Принять данные, пришедшие из аккаунта с другого устройства: без «Отменить», со снимком прежнего состояния. */
+  adopt(next, reason) {
+    const st = usable(next);
+    if (!st) throw new Error('Данные из аккаунта не читаются');
+    if (hasData(this.state)) this.snapshot(reason || 'Перед загрузкой из аккаунта');
+    this.state = st; cleanUI(this.ui, st); this.undoStack = []; this.last = null;
+    this.save(); this.rev++; this.emit();
+  },
   restoreSnapshot(key) {
     let s = null;
     try { s = parseObj(this.storage.getItem(key)); } catch { /* ниже */ }

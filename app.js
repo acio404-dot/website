@@ -12,6 +12,7 @@ import { Finance } from './finance.js';
 import { Calendar } from './calendar.js';
 import { Settings } from './settings.js';
 import { syncAll } from './sheets.js';
+import { sync, startSync, syncLabel } from './sync.js';
 
 const PAGES = {
   home: { title: 'Обзор', icon: 'home', view: Home },
@@ -48,7 +49,8 @@ function App() {
   const [, force] = useReducer((x) => x + 1, 0);
   const [page, setPage] = useState(route());
   const [day, setDay] = useState(C.today());
-  useEffect(() => store.subscribe(force), []);
+  // подписываемся и сразу перерисовываемся: данные могли измениться между первой отрисовкой и подпиской (сверка с аккаунтом, автосписания)
+  useEffect(() => { const off = store.subscribe(force); force(); return off; }, []);
   useEffect(() => {
     const onHash = () => { closeMenu(); closeAllSheets(); setPage(route()); window.scrollTo(0, 0); };
     window.addEventListener('hashchange', onHash);
@@ -88,6 +90,7 @@ function App() {
   const more = (e) => openMenu(e, [
     ...['groups', 'teachers', 'calendar', 'settings'].map((p) => ({ label: PAGES[p].title, icon: PAGES[p].icon, on: page === p, hint: p === 'teachers' && d.teachersDue.length ? String(d.teachersDue.length) : '', onClick: () => go(p) })),
     'sep',
+    { label: sync.cfg ? `Аккаунт: ${sync.cfg.login}` : 'Войти в аккаунт', icon: 'cloud', hint: sync.cfg ? (sync.status === 'ok' ? '✓' : '!') : '', onClick: () => (sync.cfg ? go('settings') : open('signIn', {})) },
     { label: dark ? 'Светлая тема' : 'Тёмная тема', icon: dark ? 'sun' : 'moon', onClick: toggleTheme },
     hasData(st) && { label: 'Скачать резервную копию', icon: 'download', onClick: backupNow },
   ]);
@@ -97,6 +100,7 @@ function App() {
       <a class="brand" href="#/" style="color:inherit;text-decoration:none"><span class="logo"><${Icon} name="logo" /></span><div><b>${s.orgName}</b><small>Финансы</small></div></a>
       <nav class="nav" aria-label="Разделы">${MAIN.map((p) => html`<a class=${cx('nav-item', page === p && 'is-active')} href=${href(p)} title=${PAGES[p].title}><${Icon} name=${PAGES[p].icon} /><span>${PAGES[p].title}</span>${badge(p)}</a>`)}</nav>
       <div class="side-foot">
+        <button class="nav-item" onClick=${() => (sync.cfg ? go('settings') : open('signIn', {}))} title=${sync.cfg ? `${sync.cfg.login}: ${syncLabel()}` : 'Войти в аккаунт, чтобы данные были во всех браузерах'}><${Icon} name="cloud" /><span>${sync.cfg ? sync.cfg.login : 'Войти в аккаунт'}</span>${sync.cfg && html`<span class=${cx('dot', sync.status === 'ok' ? 'ok' : sync.status === 'busy' ? 'today' : 'overdue')} style="margin-left:auto"></span>`}</button>
         <a class=${cx('nav-item', page === 'settings' && 'is-active')} href="#/settings" title="Настройки"><${Icon} name="settings" /><span>Настройки</span></a>
         <button class="nav-item" onClick=${toggleTheme} title=${dark ? 'Светлая тема' : 'Тёмная тема'}><${Icon} name=${dark ? 'sun' : 'moon'} /><span>${dark ? 'Светлая тема' : 'Тёмная тема'}</span></button>
       </div>
@@ -139,9 +143,13 @@ try { store.init(); } catch (e) { bootError = e; try { console.error(e); } catch
 applyLook();
 if (bootError) render(html`<${Rescue} error=${bootError} />`, document.getElementById('app'));
 else {
-  try { act.runAuto(); } catch (e) { try { console.error(e); } catch { /* нет консоли */ } }
   render(html`<${App} />`, document.getElementById('app'));
-  if (store.state.settings.sheets.some((x) => x.url && x.autoSync && x.enabled !== false)) syncAll(true, true);
+  // сначала сверяемся с аккаунтом (если он подключён), и только потом записываем автосписания и обновляем таблицы:
+  // иначе два устройства сделали бы одно и то же каждое по-своему
+  startSync().catch(() => {}).then(() => {
+    try { act.runAuto(); } catch (e) { try { console.error(e); } catch { /* нет консоли */ } }
+    if (store.state.settings.sheets.some((x) => x.url && x.autoSync && x.enabled !== false)) syncAll(true, true);
+  });
   // просим браузер не очищать данные сайта самостоятельно (поддерживается не везде; отказ не страшен)
   const keep = () => { try { if (hasData(store.state) && navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch { /* не поддерживается */ } };
   keep();

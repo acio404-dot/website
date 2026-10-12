@@ -6,6 +6,7 @@ import { money, cx, Icon, Sheet, Seg, Switch, Pill, Fields, useForm, open, openS
 import { backupNow, importFile } from './home.js';
 import { demoState } from './demo.js';
 import { SHEET_TYPES, syncSource, resultText } from './sheets.js';
+import { AccountCard, sync } from './sync.js';
 
 const S = () => store.state;
 const set = (patch, label) => act.setSettings(patch, label);
@@ -55,6 +56,7 @@ export function Settings() {
   const legacy = (() => { try { const o = JSON.parse(store.legacyRaw() || 'null'); return hasData(o) ? o : null; } catch { return null; } })();
   const size = (JSON.stringify(st).length / 1024).toFixed(0);
   return html`<div class="stack" style="max-width:820px">
+    <${AccountCard} />
     <section class="card"><div class="card-head"><h2>Центр</h2></div>
       <${Row} title="Название" hint="Показывается в шапке и подставляется в напоминания как {центр}"><${Saved} label="Название центра" value=${s.orgName} width=${200} onSave=${(v) => set({ orgName: v.trim() || 'Мой центр' }, 'Название сохранено')} /><//>
       <${Row} title="Валюта" hint="Знак и где его ставить"><${Saved} label="Знак валюты" value=${s.currency} width=${70} onSave=${(v) => set({ currency: v.trim().slice(0, 4) || '$' }, 'Валюта сохранена')} /><select class="input" aria-label="Положение знака валюты" value=${s.currencyPos} onChange=${(e) => set({ currencyPos: e.target.value })}>${[['auto', 'Авто'], ['before', 'Перед суммой'], ['after', 'После суммы']].map(([k, l]) => html`<option value=${k} selected=${s.currencyPos === k}>${l}</option>`)}</select><//>
@@ -98,7 +100,7 @@ export function Settings() {
       <div class="toolbar" style=${s.sheets.length ? 'margin-top:12px' : ''}><button class="btn" onClick=${() => open('sheetSource', {})}><${Icon} name="link" cls="s" />Подключить Google Таблицу</button><button class="btn" onClick=${() => open('sheetSource', { file: true })}><${Icon} name="file" cls="s" />Импорт из CSV</button></div>
     </section>
 
-    <section class="card"><div class="card-head"><div><h2>Копии и данные</h2><div class="hint">Данные хранятся в этом браузере (${size} КБ). На другом устройстве они появятся, если загрузить туда файл копии.</div></div></div>
+    <section class="card"><div class="card-head"><div><h2>Копии и данные</h2><div class="hint">${sync.cfg ? 'Данные хранятся в этом браузере и в вашем аккаунте' : 'Данные хранятся в этом браузере'} (${size} КБ). ${sync.cfg ? 'Копия в файле — запасной вариант на случай забытого пароля.' : 'На другом устройстве они появятся, если войти в аккаунт или загрузить туда файл копии.'}</div></div></div>
       <${Row} title="Резервная копия" hint=${days == null ? 'Ещё не скачивалась' : days === 0 ? 'Скачана сегодня' : `Скачана ${days} ${C.plural(days, 'день', 'дня', 'дней')} назад`}><button class="btn primary" onClick=${backupNow}><${Icon} name="download" cls="s" />Скачать</button><button class="btn" onClick=${importFile}><${Icon} name="upload" cls="s" />Загрузить</button><//>
       <${Row} title="Напоминать о копии" hint="Плашка на обзоре, если копия давно не обновлялась"><select class="input" aria-label="Как часто напоминать о копии" value=${String(s.backupDays)} onChange=${(e) => set({ backupDays: Number(e.target.value) })}>${[[3, 'Каждые 3 дня'], [7, 'Раз в неделю'], [14, 'Раз в 2 недели'], [30, 'Раз в месяц'], [0, 'Не напоминать']].map(([k, l]) => html`<option value=${k} selected=${s.backupDays === k}>${l}</option>`)}</select><//>
       <${Row} title="Выгрузка в CSV" hint="Для Excel, Numbers и Google Таблиц. Журнал операций выгружается в разделе «Финансы»."><button class="btn" onClick=${exportStudents}><${Icon} name="download" cls="s" />Ученики</button><//>

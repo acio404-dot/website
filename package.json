@@ -1,0 +1,8 @@
+{
+  "name": "tryos-finance-dashboard",
+  "private": true,
+  "description": "Статический сайт; зависимости нужны только серверной функции api/sync.js",
+  "dependencies": {
+    "@vercel/blob": "^2.8.1"
+  }
+}

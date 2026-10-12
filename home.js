@@ -5,6 +5,7 @@ import * as C from './core.js';
 import { money, moneyBig, cx, Icon, Avatar, Pill, Empty, Seg, Meter, Spark, CashChart, DueLabel, getDerived, open, go, dueText, studentInfo, toast, copyText, download, pickFile, openMenu, tap, confirmSheet } from './ui.js';
 import { quickPay, quickRecurring, debtorsText } from './quick.js';
 import { demoState } from './demo.js';
+import { sync } from './sync.js';
 
 const S = () => store.state;
 const groupOf = (s) => S().groups.find((g) => g.id === s.groupId);
@@ -135,7 +136,7 @@ function Banners({ d }) {
   const dismiss = (k, v = true) => store.setUI({ dismissed: { ...ui.dismissed, [k]: v } });
   const days = st.meta.lastBackupAt ? Math.floor((Date.now() - Date.parse(st.meta.lastBackupAt)) / 86400000) : null;
   // первую копию предлагаем, когда в дашборде уже поработали, а не в первую минуту
-  const needBackup = st.settings.backupDays > 0 && (days == null ? (st.meta.rev || 0) - (st.meta.demo ? st.meta.demoRev || 0 : 0) >= 8 : days >= st.settings.backupDays) && ui.dismissed.backup !== C.today();
+  const needBackup = !sync.cfg && st.settings.backupDays > 0 && (days == null ? (st.meta.rev || 0) - (st.meta.demo ? st.meta.demoRev || 0 : 0) >= 8 : days >= st.settings.backupDays) && ui.dismissed.backup !== C.today();
   return html`
     ${store.saveError && html`<div class="banner warn"><${Icon} name="alert" /><div class="grow"><b>Изменения не сохраняются</b><div class="small muted">В хранилище браузера закончилось место. Скачайте резервную копию, чтобы ничего не потерять.</div></div><button class="btn sm primary" onClick=${backupNow}><${Icon} name="download" cls="s" />Скачать копию</button></div>`}
     ${!store.persistent && html`<div class="banner warn"><${Icon} name="alert" /><div class="grow"><b>Браузер не сохраняет данные</b><div class="small muted">Похоже, включён приватный режим. Всё, что вы внесёте, пропадёт после закрытия вкладки.</div></div></div>`}
@@ -160,6 +161,7 @@ export function Onboarding() {
     <h1>Начнём с данных</h1>
     <p class="muted">Дашборд покажет, кто и за какие месяцы должен, кому пора напомнить, сколько выплатить преподавателям и что осталось после расходов. Данные хранятся в этом браузере.</p>
     <div class="opts">
+      <button class="opt" style="grid-column:1/-1" onClick=${() => open('signIn', {})}><${Avatar} icon="cloud" /><span><b>Войти в аккаунт</b><span class="hint">Если вы уже ведёте дашборд в другом браузере — данные загрузятся оттуда</span></span></button>
       <button class="opt" onClick=${importFile}><${Avatar} icon="upload" /><span><b>Загрузить копию</b><span class="hint">Файл .json из этого или прежнего дашборда</span></span></button>
       <button class="opt" onClick=${() => open('groupForm', {})}><${Avatar} icon="layers" /><span><b>Создать первую группу</b><span class="hint">Цена и день оплаты, затем ученики</span></span></button>
       <button class="opt" onClick=${() => go('settings')}><${Avatar} icon="table" /><span><b>Импорт из таблицы</b><span class="hint">Google Таблица или файл CSV</span></span></button>
@@ -182,6 +184,7 @@ export function Home() {
   const left = order.filter((id) => ['attention', 'cashflow', 'recent'].includes(id)), right = order.filter((id) => ['payouts', 'groups', 'upcoming'].includes(id));
   return html`<div class="stack">
     <${Recovered} />
+    ${sync.status === 'conflict' && html`<div class="banner warn"><${Icon} name="alert" /><div class="grow"><b>Данные в аккаунте и на этом устройстве различаются</b><div class="small muted">Пока вы не выберете, какие оставить, синхронизация приостановлена.</div></div><button class="btn sm primary" onClick=${() => open('syncConflict', {})}>Выбрать</button></div>`}
     <${Banners} d=${d} />
     ${on('kpi') && W.kpi()}
     <div class=${cx('cols', (!left.length || !right.length) && 'even')}>
