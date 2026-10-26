@@ -57,7 +57,7 @@ function Matrix({ list, d }) {
     <div class="table-wrap" ref=${wrap}><table class="matrix">
       <thead><tr><th>Ученик</th>${months.map((ym) => html`<th class=${cx('num', ym === d.ym && 'cur')}>${C.ymShort(ym, true)}</th>`)}</tr></thead>
       <tbody>${sections.map(({ g, m }) => html`
-        <tr class="sec"><td colspan=${months.length + 1}><span class="stick">${g ? g.name : 'Индивидуально'}<span class="faint" style="font-weight:500">${g ? ` · ${g.payDay}-го числа${byId(st.teachers, g.teacherId) ? ' · ' + byId(st.teachers, g.teacherId).name : ''}` : ''}</span></span></td></tr>
+        <tr class="sec"><td colspan=${months.length + 1}><span class="stick">${g ? g.name : 'Индивидуально'}<span class="faint" style="font-weight:500">${g ? ` · ${g.payDay}-го числа${C.everyOf(g) > 1 ? ' · ' + C.everyLabel(C.everyOf(g)) : ''}${byId(st.teachers, g.teacherId) ? ' · ' + byId(st.teachers, g.teacherId).name : ''}` : ''}</span></span></td></tr>
         ${m.map((s) => html`<tr key=${s.id}><td><a href="#" onClick=${(e) => { e.preventDefault(); open('student', { id: s.id }); }} style="color:inherit;font-weight:600">${s.name}</a></td>${months.map((ym) => html`<${Cell} s=${s} L=${led.get(s.id)} ym=${ym} />`)}</tr>`)}`)}</tbody>
       <tfoot><tr><td>Собрано / начислено</td>${tot.map((x) => html`<td class="num"><div>${money(x.got)}</div><div class="sub" style="font-weight:500">из ${money(x.exp)}</div></td>`)}</tr></tfoot>
     </table></div>
@@ -167,10 +167,10 @@ function StudentSheetI({ id, close }) {
       </div>
       <div><div class="sec-title">Данные</div>
         <dl class="kv">
-          <dt>${s.payType === 'package' ? 'Абонемент' : 'Цена в месяц'}</dt><dd>${money(price)}${s.payType === 'package' ? ` за ${L.size} ${C.plural(L.size, 'занятие', 'занятия', 'занятий')}` : ''}${s.rates.length > 1 ? html` <span class="faint">(менялась ${s.rates.length - 1} ${C.plural(s.rates.length - 1, 'раз', 'раза', 'раз')})</span>` : ''}</dd>
-          ${s.payType !== 'package' && html`<dt>День оплаты</dt><dd>${s.payDay}-го числа</dd><dt>Начисления</dt><dd>с ${C.ymGen(s.startYm)} ${s.startYm.slice(0, 4)}${s.endYm ? ` по ${C.ymName(s.endYm)} ${s.endYm.slice(0, 4)}` : ''}</dd>`}
+          <dt>${s.payType === 'package' ? 'Абонемент' : C.everyOf(s) > 1 ? `Цена за ${C.everyOf(s)} мес.` : 'Цена в месяц'}</dt><dd>${money(price)}${s.payType === 'package' ? ` за ${L.size} ${C.plural(L.size, 'занятие', 'занятия', 'занятий')}` : ''}${s.rates.length > 1 ? html` <span class="faint">(менялась ${s.rates.length - 1} ${C.plural(s.rates.length - 1, 'раз', 'раза', 'раз')})</span>` : ''}</dd>
+          ${s.payType !== 'package' && html`<dt>День оплаты</dt><dd>${s.payDay}-го числа${C.everyOf(s) > 1 ? `, ${C.everyLabel(C.everyOf(s))}` : ''}</dd><dt>Начисления</dt><dd>с ${C.ymGen(s.startYm)} ${s.startYm.slice(0, 4)}${s.endYm ? ` по ${C.ymName(s.endYm)} ${s.endYm.slice(0, 4)}` : ''}</dd>`}
           ${s.phone && html`<dt>Телефон</dt><dd>${s.phone}</dd>`}${s.telegram && html`<dt>Telegram</dt><dd>@${s.telegram}</dd>`}
-          ${payRate && payRate.amount > 0 && html`<dt>Преподавателю</dt><dd>${payRate.mode === 'percent' ? `${payRate.amount}% от оплат` : `${money(payRate.amount)} в месяц`}, ${s.pay.payDay}-го</dd>`}
+          ${payRate && payRate.amount > 0 && html`<dt>Преподавателю</dt><dd>${payRate.mode === 'percent' ? `${payRate.amount}% от оплат` : `${money(payRate.amount)} в месяц`}, ${s.pay.when === 'end' ? 'в конце месяца' : s.pay.when === 'next' ? `${s.pay.payDay}-го следующего месяца` : `${s.pay.payDay}-го`}</dd>`}
           ${st.projects.length > 1 && s.projectId && html`<dt>Проект</dt><dd>${(byId(st.projects, s.projectId) || {}).name}</dd>`}
           ${s.notes && html`<dt>Заметка</dt><dd>${s.notes}</dd>`}
         </dl>

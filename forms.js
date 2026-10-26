@@ -20,17 +20,28 @@ function bad(v, fields) {
 const projectField = (label = 'Проект') => S().projects.length ? { k: 'projectId', label, type: 'select', opts: [['', '— без проекта —'], ...S().projects.map((p) => [p.id, p.name])] } : null;
 const teacherOpts = () => [['', '— не указан —'], ...S().teachers.filter((t) => !t.archived).map((t) => [t.id, t.name])];
 const curRate = (rates, key) => { const r = C.rateAt(rates, C.ymOf(C.today())); return r ? r[key] : ''; };
-const payInit = (pay, fallbackDay) => { const r = pay && C.rateAt(pay.rates, C.ymAdd(C.ymOf(C.today()), 1)); return { pay_mode: r ? r.mode : 'fixed', pay_amount: r && r.amount ? String(r.amount) : '', pay_day: String((pay && pay.payDay) || fallbackDay || 1) }; };
-const payOut = (v, init) => ({ mode: v.pay_mode, amount: num(v.pay_amount), payDay: v.pay_day, from: v.pay_from, changed: v.pay_mode !== init.pay_mode || num(v.pay_amount) !== num(init.pay_amount) });
+const payInit = (pay, fallbackDay) => {
+  const r = pay && C.rateAt(pay.rates, C.ymAdd(C.ymOf(C.today()), 1));
+  const first = pay && pay.rates && pay.rates.length ? pay.rates.reduce((a, b) => (a.from <= b.from ? a : b)).from : '';
+  const when = pay && C.PAY_WHEN.includes(pay.when) ? pay.when : 'end';
+  return { pay_mode: r ? r.mode : 'fixed', pay_amount: r && r.amount ? String(r.amount) : '', pay_day: String((pay && pay.payDay) || fallbackDay || 1), pay_when: when, pay_from: first || C.payStartYm({ payDay: (pay && pay.payDay) || fallbackDay || 1, when }) };
+};
+const payOut = (v, init) => ({ mode: v.pay_mode, amount: num(v.pay_amount), payDay: v.pay_day, when: v.pay_when, from: v.pay_from, fromChanged: v.pay_from !== init.pay_from, changed: v.pay_mode !== init.pay_mode || num(v.pay_amount) !== num(init.pay_amount) || v.pay_when !== init.pay_when || v.pay_day !== init.pay_day });
+const WHEN_OPTS = [['end', 'В конце месяца занятий'], ['next', 'Числа следующего месяца'], ['same', 'Числа этого же месяца']];
+const everyOpts = () => C.EVERY.map((n) => [String(n), n === 1 ? 'Каждый месяц' : `Раз в ${n} ${C.plural(n, 'месяц', 'месяца', 'месяцев')}`]);
+/** Первая выплата по введённым настройкам: «31 окт 2026». */
+const firstPayText = (v) => { const ym = C.isYm(v.pay_from) ? v.pay_from : C.ymOf(C.today()); return C.fmtDate(C.payDue(ym, { payDay: C.clampDay(v.pay_day), when: v.pay_when }), true); };
 /** Месяцы для списков «действует с»: от полугода назад (или с первого месяца записи) до двух месяцев вперёд; last расширяет список. */
 const fromOptions = (first, last) => { const cur = C.ymOf(C.today()), to = C.ymAdd(cur, 2); return monthOptions(first && first < C.ymAdd(cur, -6) ? first : C.ymAdd(cur, -6), last && last > to ? last : to, cur); };
 /** Поля «оплата преподавателю» для группы или индивидуального ученика. */
 const payFields = (title, hint, init, show) => [
   { sec: title, hint, show },
-  { k: 'pay_mode', label: 'Как считать', type: 'select', opts: [['fixed', 'Сумма в месяц'], ['percent', 'Процент от оплат']], show },
-  { k: 'pay_amount', label: 'Сумма или процент', type: 'money', ph: '0', show },
-  { k: 'pay_day', label: 'День выплаты (число месяца)', type: 'number', show },
-  { k: 'pay_from', label: 'Действует с', type: 'select', opts: fromOptions(), show: (v) => (!show || show(v)) && (v.pay_mode !== init.pay_mode || num(v.pay_amount) !== num(init.pay_amount)), hint: 'Прошлые месяцы не пересчитываются.' },
+  // процент оставлен только тем, у кого он уже настроен
+  init.pay_mode === 'percent' ? { k: 'pay_mode', label: 'Как считать', type: 'select', opts: [['fixed', 'Сумма в месяц'], ['percent', 'Процент от оплат']], show } : null,
+  { k: 'pay_amount', label: init.pay_mode === 'percent' ? 'Сумма или процент' : 'Сумма за месяц занятий', type: 'money', ph: '0', show },
+  { k: 'pay_when', label: 'Когда выплачивать', type: 'select', opts: WHEN_OPTS, show, hint: 'Выплата за месяц занятий — после того, как месяц проведён.' },
+  { k: 'pay_day', label: 'Число месяца', type: 'number', show: (v) => (!show || show(v)) && v.pay_when !== 'end' },
+  { k: 'pay_from', label: 'Начислять с месяца', type: 'select', opts: fromOptions(init.pay_from), show, hint: (v) => `Первая выплата: ${firstPayText(v)}. Более ранние месяцы не начисляются.` },
 ];
 
 export function StudentForm({ id, groupId, close }) {
@@ -41,16 +52,15 @@ export function StudentForm({ id, groupId, close }) {
   const L = s ? getDerived().student(s.id) : null;
   const init = s ? {
     name: s.name, groupId: s.groupId, projectId: s.projectId, teacherId: s.teacherId, subject: s.subject, payType: s.payType,
-    price: String(curRate(s.rates, 'price') ?? ''), payDay: String(s.payDay), startYm: s.startYm, rateFrom: L && !L.package ? C.firstUnpaidYm(L, cur) : cur,
+    price: String(curRate(s.rates, 'price') ?? ''), payDay: String(s.payDay), every: String(C.everyOf(s)), startYm: s.startYm, rateFrom: L && !L.package ? C.firstUnpaidYm(L, cur) : cur,
     pkgSize: String((s.pkg && s.pkg.size) || 8), lessonsLeft: L && L.package ? String(L.lessonsLeft) : '', phone: s.phone, telegram: s.telegram, notes: s.notes, ...payInit(s.pay, s.payDay),
   } : {
     name: '', groupId: g0 ? g0.id : '', projectId: g0 ? g0.projectId : store.ui.project !== 'all' ? store.ui.project : (st.projects[0] || {}).id || '', teacherId: g0 ? g0.teacherId : '', subject: g0 ? g0.subject : '',
-    payType: g0 ? g0.payType : 'monthly', price: g0 && g0.price ? String(g0.price) : '', payDay: String(g0 ? g0.payDay : Math.min(28, Number(C.today().slice(8, 10)))), startYm: cur, rateFrom: cur,
+    payType: g0 ? g0.payType : 'monthly', price: g0 && g0.price ? String(g0.price) : '', payDay: String(g0 ? g0.payDay : Math.min(28, Number(C.today().slice(8, 10)))), every: String(g0 ? C.everyOf(g0) : 1), startYm: cur, rateFrom: cur,
     pkgSize: String(g0 ? g0.lessonsInPackage : 8), lessonsLeft: '', phone: '', telegram: '', notes: '', ...payInit(null, 1),
   };
-  init.pay_from = defaultStartYm(init.pay_day);
   const [v, set] = useForm(init);
-  const onGroup = (gid, setF) => { const g = byId(st.groups, gid); if (!g) return; setF({ projectId: g.projectId, teacherId: g.teacherId || v.teacherId, subject: g.subject || v.subject, ...(s ? {} : { payType: g.payType, price: g.price ? String(g.price) : v.price, payDay: String(g.payDay), pkgSize: String(g.lessonsInPackage) }) }); };
+  const onGroup = (gid, setF) => { const g = byId(st.groups, gid); if (!g) return; setF({ projectId: g.projectId, teacherId: g.teacherId || v.teacherId, subject: g.subject || v.subject, ...(s ? {} : { payType: g.payType, price: g.price ? String(g.price) : v.price, payDay: String(g.payDay), every: String(C.everyOf(g)), pkgSize: String(g.lessonsInPackage) }) }); };
   const groupTeacher = (x) => (byId(st.groups, x.groupId) || {}).teacherId || '';
   const monthly = (x) => x.payType !== 'package';
   const soloPerGroup = (x) => !x.groupId && (byId(st.teachers, x.teacherId) || {}).payType === 'perGroup';
@@ -61,8 +71,9 @@ export function StudentForm({ id, groupId, close }) {
     { k: 'teacherId', label: 'Преподаватель', type: 'select', opts: teacherOpts(), show: (x) => !groupTeacher(x) },
     { k: 'teacherOfGroup', type: 'custom', label: 'Преподаватель', show: (x) => !!groupTeacher(x), render: (x) => html`<div class="input" style="display:flex;align-items:center;background:var(--surface-2);color:var(--text-2)">${(byId(st.teachers, groupTeacher(x)) || {}).name || '—'}</div>`, hint: 'как у группы' },
     { k: 'payType', label: 'Как платит', type: 'seg', span: true, opts: [['monthly', 'Каждый месяц'], ['package', 'Абонемент на N занятий']] },
-    { k: 'price', label: v.payType === 'package' ? 'Цена абонемента' : 'Цена в месяц', type: 'money', ph: '0', req: true },
+    { k: 'price', label: v.payType === 'package' ? 'Цена абонемента' : Number(v.every) > 1 ? `Цена за ${v.every} ${C.plural(Number(v.every), 'месяц', 'месяца', 'месяцев')}` : 'Цена в месяц', type: 'money', ph: '0', req: true },
     { k: 'payDay', label: 'День оплаты (число месяца)', type: 'number', show: monthly },
+    { k: 'every', label: 'Как часто платит', type: 'select', opts: everyOpts(), show: monthly, hint: (x) => (Number(x.every) > 1 ? `Начисление раз в ${x.every} мес., считая от первого месяца оплаты.` : null) },
     { k: 'rateFrom', label: 'Новая цена действует с', type: 'select', span: true, opts: fromOptions(s && s.startYm, init.rateFrom), show: priceChanged, hint: 'Уже оплаченные месяцы останутся по старой цене. Чтобы исправить цену с самого начала, выберите первый месяц.' },
     { k: 'startYm', label: s ? 'Начисления идут с' : 'Первый месяц оплаты', type: 'select', opts: fromOptions(s && s.startYm, s && s.startYm), show: monthly, hint: s ? null : 'С этого месяца дашборд начнёт ждать оплату.' },
     { k: 'pkgSize', label: 'Занятий в абонементе', type: 'number', show: (x) => !monthly(x) },
@@ -76,7 +87,7 @@ export function StudentForm({ id, groupId, close }) {
   ];
   const submit = () => {
     if (!v.name.trim()) return;
-    if (bad(v, [['price', 'Цена'], ['payDay', 'День оплаты', 31], ['pkgSize', 'Занятий в абонементе', 500], ['lessonsLeft', 'Осталось занятий'], ['pay_amount', 'Сумма или процент'], ['pay_day', 'День выплаты', 31]])) return;
+    if (bad(v, [['price', 'Цена'], ['payDay', 'День оплаты', 31], ['pkgSize', 'Занятий в абонементе', 500], ['lessonsLeft', 'Осталось занятий'], ['pay_amount', 'Сумма за месяц'], ['pay_day', 'Число месяца', 31]])) return;
     close();
     act.saveStudent({ ...v, price: num(v.price), priceWas: s ? num(init.price) : null, lessonsLeft: String(v.lessonsLeft).trim() === '' ? '' : num(v.lessonsLeft), pay: soloPerGroup(v) ? payOut(v, init) : null }, id);
   };
@@ -90,9 +101,8 @@ export function GroupForm({ id, close }) {
   const st = S();
   const g = id ? byId(st.groups, id) : null;
   const cur = C.ymOf(C.today());
-  const init = g ? { name: g.name, projectId: g.projectId, teacherId: g.teacherId, subject: g.subject, schedule: g.schedule, payType: g.payType, price: g.price ? String(g.price) : '', payDay: String(g.payDay), lessonsInPackage: String(g.lessonsInPackage), notes: g.notes, applyFrom: '', ...payInit(g.pay, g.payDay) }
-    : { name: '', projectId: store.ui.project !== 'all' ? store.ui.project : (st.projects[0] || {}).id || '', teacherId: '', subject: '', schedule: '', payType: 'monthly', price: '', payDay: '1', lessonsInPackage: '8', notes: '', applyFrom: '', ...payInit(null, 1) };
-  init.pay_from = defaultStartYm(init.pay_day);
+  const init = g ? { name: g.name, projectId: g.projectId, teacherId: g.teacherId, subject: g.subject, schedule: g.schedule, payType: g.payType, price: g.price ? String(g.price) : '', payDay: String(g.payDay), every: String(C.everyOf(g)), lessonsInPackage: String(g.lessonsInPackage), notes: g.notes, applyFrom: '', ...payInit(g.pay, g.payDay) }
+    : { name: '', projectId: store.ui.project !== 'all' ? store.ui.project : (st.projects[0] || {}).id || '', teacherId: '', subject: '', schedule: '', payType: 'monthly', price: '', payDay: '1', every: '1', lessonsInPackage: '8', notes: '', applyFrom: '', ...payInit(null, 1) };
   const [v, set] = useForm(init);
   const members = g ? st.students.filter((s) => s.groupId === g.id && !s.archived).length : 0;
   const teacher = byId(st.teachers, v.teacherId);
@@ -101,18 +111,19 @@ export function GroupForm({ id, close }) {
     { k: 'teacherId', label: 'Преподаватель', type: 'select', opts: teacherOpts() },
     { k: 'schedule', label: 'Расписание', ph: 'Пн, Ср 18:00' },
     { k: 'payType', label: 'Как платят ученики', type: 'seg', span: true, opts: [['monthly', 'Каждый месяц'], ['package', 'Абонемент на N занятий']] },
-    { k: 'price', label: 'Цена для ученика', type: 'money', ph: '0' },
+    { k: 'price', label: Number(v.every) > 1 ? `Цена для ученика за ${v.every} ${C.plural(Number(v.every), 'месяц', 'месяца', 'месяцев')}` : 'Цена для ученика', type: 'money', ph: '0' },
     { k: 'payDay', label: 'День оплаты (число месяца)', type: 'number', show: (x) => x.payType !== 'package' },
+    { k: 'every', label: 'Как часто платят', type: 'select', opts: everyOpts(), show: (x) => x.payType !== 'package', hint: 'Подставляется новым ученикам группы.' },
     { k: 'lessonsInPackage', label: 'Занятий в абонементе', type: 'number', show: (x) => x.payType === 'package' },
     { k: 'applyFrom', label: `Обновить цену у учеников группы (${members})`, type: 'select', span: true, opts: [['', 'Не менять — только для новых учеников'], ...fromOptions().map(([ym, l]) => [ym, 'С месяца: ' + l])], show: (x) => !!g && members > 0 && num(x.price) !== num(init.price), hint: 'Изменится только у тех, кто платит обычную цену группы.' },
     { k: 'subject', label: 'Предмет', ph: 'TR-YOS' },
     projectField(),
     { k: 'notes', label: 'Заметка', span: true },
-    ...payFields('Оплата преподавателю за эту группу', teacher && teacher.payType !== 'perGroup' ? `У ${teacher.name} другая схема оплаты — эти поля начнут работать, если выбрать схему «за группу / индивидуально».` : 'Каждый месяц начисляется преподавателю и появляется в списке «Выплатить».', init, (x) => !!x.teacherId),
+    ...payFields('Оплата преподавателю за эту группу', teacher && teacher.payType !== 'perGroup' ? `У ${teacher.name} другая схема оплаты — эти поля начнут работать, если выбрать схему «за группу / индивидуально».` : 'За каждый месяц занятий начисляется сумма и появляется в списке «Выплатить», когда подходит срок.', init, (x) => !!x.teacherId),
   ];
   const submit = () => {
     if (!v.name.trim()) return;
-    if (bad(v, [['price', 'Цена для ученика'], ['payDay', 'День оплаты', 31], ['lessonsInPackage', 'Занятий в абонементе', 500], ['pay_amount', 'Сумма или процент'], ['pay_day', 'День выплаты', 31]])) return;
+    if (bad(v, [['price', 'Цена для ученика'], ['payDay', 'День оплаты', 31], ['lessonsInPackage', 'Занятий в абонементе', 500], ['pay_amount', 'Сумма за месяц'], ['pay_day', 'Число месяца', 31]])) return;
     close();
     act.saveGroup({ ...v, price: num(v.price), pay: payOut(v, init) }, id);
   };
@@ -134,7 +145,7 @@ export function TeacherForm({ id, close }) {
   const fields = [
     { k: 'name', label: 'Имя преподавателя', req: true, span: true, ph: 'Мария Ивановна' },
     { k: 'payType', label: 'Как считается оплата', type: 'select', span: true, opts: [['perGroup', 'За каждую группу и индивидуального ученика'], ['salary', 'Оклад — фиксированная сумма в месяц'], ['perLesson', 'За каждое проведённое занятие']],
-      hint: (x) => x.payType === 'perGroup' ? 'Сумма (или процент от оплат учеников) и день выплаты задаются в карточке каждой группы и у индивидуальных учеников.' : x.payType === 'perLesson' ? 'Занятия отмечаются кнопкой «+1 занятие»; месяц оплачивается в день выплаты следующего месяца.' : 'Каждый месяц начисляется оклад, срок — день выплаты.' },
+      hint: (x) => x.payType === 'perGroup' ? 'Сумма за месяц, с какого месяца начислять и когда выплачивать задаются в карточке каждой группы и у индивидуальных учеников.' : x.payType === 'perLesson' ? 'Занятия отмечаются кнопкой «+1 занятие»; месяц оплачивается в день выплаты следующего месяца.' : 'Каждый месяц начисляется оклад, срок — день выплаты.' },
     { k: 'rate', label: v.payType === 'perLesson' ? 'Ставка за занятие' : 'Оклад в месяц', type: 'money', ph: '0', show: fixed },
     { k: 'payDay', label: 'День выплаты (число месяца)', type: 'number', show: fixed },
     { k: 'rateFrom', label: 'Новая сумма действует с', type: 'select', span: true, opts: fromOptions(t && t.startYm), show: (x) => !!t && fixed(x) && x.payType === init.payType && num(x.rate) !== num(init.rate) },

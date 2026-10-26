@@ -135,6 +135,26 @@ export function setRate(rates, from, patch) {
   return same ? keep : [...keep, next].sort((a, b) => (a.from < b.from ? -1 : 1));
 }
 
+/** Срок выплаты преподавателю за месяц ym по настройкам схемы «за группу»: в конце месяца занятий,
+    определённого числа следующего месяца или этого же месяца (прежнее поведение). */
+export const PAY_WHEN = ['end', 'next', 'same'];
+export function payDue(ym, pay) {
+  const when = pay && PAY_WHEN.includes(pay.when) ? pay.when : 'same';
+  if (when === 'end') return `${ym}-${pad(daysInYm(ym))}`;
+  if (when === 'next') return dateFor(ymAdd(ym, 1), pay.payDay);
+  return dateFor(ym, pay.payDay);
+}
+/** Первый месяц, срок выплаты за который ещё не прошёл (с него начисляется заново после паузы или смены схемы). */
+export function payStartYm(pay, t = today()) {
+  const cur = ymOf(t);
+  for (let ym = ymAdd(cur, -1), i = 0; i < 4; ym = ymAdd(ym, 1), i++) if (payDue(ym, pay) >= t) return ym;
+  return ymAdd(cur, 2);
+}
+/** Как часто платит ученик (в месяцах): 1 — каждый месяц, 2 — раз в два месяца и т. д. */
+export const EVERY = [1, 2, 3, 4, 6, 12];
+export const everyOf = (s) => (EVERY.includes(Number(s && s.every)) ? Number(s.every) : 1);
+export const everyLabel = (n) => (n > 1 ? `раз в ${n} ${plural(n, 'месяц', 'месяца', 'месяцев')}` : 'каждый месяц');
+
 // ---------- Статусы ----------
 export const STATUS_ORDER = { overdue: 0, today: 1, soon: 2, later: 3, ok: 3, paid: 4, skip: 5 };
 export const STATUS_LABEL = { overdue: 'Просрочено', today: 'Сегодня', soon: 'Скоро', later: 'По графику', ok: 'В порядке', paid: 'Оплачено', skip: 'Пауза' };
@@ -150,8 +170,11 @@ export function studentCharges(s, toYm) {
   const out = [];
   if (s.payType !== 'package' && isYm(s.startYm)) {
     const end = s.endYm && s.endYm < toYm ? s.endYm : toYm;
+    const every = everyOf(s);
     for (const ym of ymRange(s.startYm, end)) {
       const ov = s.overrides ? s.overrides[ym] : undefined;
+      // оплата раз в N месяцев: начисляется только каждый N-й месяц от первого (своя сумма за месяц всё равно учитывается)
+      if (every > 1 && ymDiff(ym, s.startYm) % every !== 0 && ov == null) continue;
       const base = Number((rateAt(s.rates, ym) || {}).price) || 0;
       const due = s.firstDue && ymOf(s.firstDue) === ym ? s.firstDue : dateFor(ym, s.payDay);
       out.push({ key: 'm:' + ym, kind: 'month', ym, due, amount: ov != null ? Math.max(0, Number(ov) || 0) : base, base, custom: ov != null });
@@ -188,7 +211,7 @@ export function studentLedger(s, pays, opt = {}) {
     toYm = ymAdd(toYm, 1);
     charges = studentCharges(s, toYm);
     const next = charges.reduce((a, c) => a + c.amount, 0);
-    if (next <= total) { if (++flat > 3) break; } else flat = 0; // цена 0 или долгая пауза — предоплату не на что разнести
+    if (next <= total) { if (++flat > Math.max(3, everyOf(s))) break; } else flat = 0; // цена 0 или долгая пауза — предоплату не на что разнести
     total = next;
   }
   let pool = paid;
@@ -282,9 +305,9 @@ function payLines(lines, prefix, name, pay, endYm, baseFn, toYm, src, refId) {
     const r = rateAt(rates, ym);
     if (!r || r.from > ym) continue;
     const pct = r.mode === 'percent';
-    const due = dateFor(ym, pay.payDay);
+    const due = payDue(ym, pay);
     // процент — от оплат, полученных после прошлого дня выплаты и по этот день включительно: к сроку сумма уже не меняется
-    const prev = dateFor(ymAdd(ym, -1), pay.payDay), after = pct && isISO(r.after) && r.after > prev ? r.after : prev;
+    const prev = payDue(ymAdd(ym, -1), pay), after = pct && isISO(r.after) && r.after > prev ? r.after : prev;
     const base = pct ? baseFn(after, due) : 0;
     const amount = pct ? r2(base * (Number(r.amount) || 0) / 100) : Number(r.amount) || 0;
     if (amount > 0) lines.push({ key: `${prefix}:${ym}`, ym, due, amount, src, refId, label: name, pct: pct ? Number(r.amount) || 0 : null, base, win: pct ? [addDays(after, 1), due] : null });

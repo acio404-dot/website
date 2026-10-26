@@ -2,7 +2,7 @@
    снимки и все изменения (оплаты, ученики, группы, преподаватели, подписки). */
 import {
   today, ymOf, ymAdd, ymRange, ymName, dateFor, clampDay, isYm, isISO, isSaneDate, nextDateForDay, r2, uid, norm, fmtMoney, rateAt, setRate,
-  studentLedger, ledgerFromHistory, buildIndex, recurringLedger, teacherLines, derive,
+  studentLedger, ledgerFromHistory, buildIndex, recurringLedger, teacherLines, derive, PAY_WHEN, payDue, payStartYm, EVERY,
 } from './core.js';
 
 export const KEY = 'tryos-finance-v2';
@@ -56,10 +56,12 @@ const normSheet = (x) => {
   return o;
 };
 const normPay = (pay, fallbackDay) => {
-  if (!pay || typeof pay !== 'object') return { payDay: clampDay(fallbackDay || 1), rates: [] };
+  if (!pay || typeof pay !== 'object') return { payDay: clampDay(fallbackDay || 1), when: 'same', rates: [] };
   const rates = (Array.isArray(pay.rates) ? pay.rates : []).filter((r) => r && isYm(r.from)).map((r) => { const o = { from: r.from, mode: r.mode === 'percent' ? 'percent' : 'fixed', amount: Math.max(0, num(r.amount)) }; if (isISO(r.after)) o.after = r.after; return o; });
-  return { payDay: clampDay(pay.payDay || fallbackDay || 1), rates };
+  // when: 'end' — в конце месяца занятий, 'next' — числа следующего месяца, 'same' — числа этого же месяца (так было раньше)
+  return { payDay: clampDay(pay.payDay || fallbackDay || 1), when: PAY_WHEN.includes(pay.when) ? pay.when : 'same', rates };
 };
+const normEvery = (v) => (EVERY.includes(Math.round(num(v))) ? Math.round(num(v)) : 1);
 export function normalize(raw) {
   const base = emptyState();
   const st = obj(raw);
@@ -87,7 +89,7 @@ export function normalize(raw) {
   out.groups = arr('groups').map((g, i) => ({
     id: str(g.id) || uid(), name: str(g.name), projectId: str(g.projectId), teacherId: str(g.teacherId), subject: str(g.subject), schedule: str(g.schedule),
     color: Number.isInteger(g.color) ? ((g.color % 8) + 8) % 8 : i % 8, payType: g.payType === 'package' ? 'package' : 'monthly', price: Math.max(0, num(g.price)), payDay: clampDay(g.payDay),
-    lessonsInPackage: Math.max(1, Math.round(num(g.lessonsInPackage)) || 8), notes: str(g.notes), archived: !!g.archived, endYm: isYm(g.endYm) ? g.endYm : null, pay: normPay(g.pay, g.payDay),
+    lessonsInPackage: Math.max(1, Math.round(num(g.lessonsInPackage)) || 8), notes: str(g.notes), archived: !!g.archived, endYm: isYm(g.endYm) ? g.endYm : null, pay: normPay(g.pay, g.payDay), every: normEvery(g.every),
   }));
   out.students = arr('students').map((s) => {
     const startYm = isYm(s.startYm) ? s.startYm : cur;
@@ -97,7 +99,7 @@ export function normalize(raw) {
     const o = {
       id: str(s.id) || uid(), name: str(s.name), groupId: str(s.groupId), projectId: str(s.projectId), teacherId: str(s.teacherId), subject: str(s.subject),
       phone: str(s.phone), telegram: str(s.telegram), notes: str(s.notes), archived: !!s.archived,
-      payType: s.payType === 'package' ? 'package' : 'monthly', payDay: clampDay(s.payDay), startYm, endYm: isYm(s.endYm) ? s.endYm : null,
+      payType: s.payType === 'package' ? 'package' : 'monthly', payDay: clampDay(s.payDay), every: normEvery(s.every), startYm, endYm: isYm(s.endYm) ? s.endYm : null,
       rates: rates.length ? rates : [{ from: startYm, price: Math.max(0, num(s.price)) }], overrides,
       extras: (Array.isArray(s.extras) ? s.extras : []).filter((x) => x && isISO(x.date)).map((x) => ({ id: str(x.id) || uid(), date: fixDate(x.date), amount: Math.max(0, num(x.amount)), label: str(x.label) })),
       pkg: s.payType === 'package' ? { size: Math.max(1, Math.round(num(s.pkg && s.pkg.size)) || 8), bonus: num(s.pkg && s.pkg.bonus), used: Math.max(0, num(s.pkg && s.pkg.used)) } : null,
@@ -419,25 +421,28 @@ const tgHandle = (v) => trimmed(v).replace(/^(https?:\/\/)?(www\.)?(t|telegram)\
 export const defaultStartYm = (payDay, t = today()) => ymOf(nextDateForDay(payDay, t));
 function mergePay(old, d, fallbackDay, reset) {
   const payDay = clampDay(d.payDay || (old && old.payDay) || fallbackDay || 1);
+  const when = PAY_WHEN.includes(d.when) ? d.when : (old && PAY_WHEN.includes(old.when) ? old.when : 'same');
   const mode = d.mode === 'percent' ? 'percent' : 'fixed';
   const amount = Math.max(0, num(d.amount));
-  const from = isYm(d.from) ? d.from : defaultStartYm(payDay);
+  const from = isYm(d.from) ? d.from : payStartYm({ payDay, when });
   const prev = reset ? [] : (old && old.rates) || [];
-  if (!prev.length && !amount) return { payDay, rates: [] };
-  if (!reset && d.changed === false) return { payDay, rates: prev };
-  return { payDay, rates: setRate(prev, from, { mode, amount }) };
+  if (!prev.length && !amount) return { payDay, when, rates: [] };
+  // явно выбран другой первый месяц — начисления идут заново с него (прошлые ставки не нужны)
+  if (d.fromChanged) return { payDay, when, rates: amount ? [{ from, mode, amount }] : [] };
+  if (!reset && d.changed === false) return { payDay, when, rates: prev };
+  return { payDay, when, rates: setRate(prev, from, { mode, amount }) };
 }
 /** Начать начисления по схеме заново с месяца from: более ранние месяцы больше не начисляются. */
 function rebasePay(pay, from) {
   if (!pay || !Array.isArray(pay.rates) || !pay.rates.length) return pay;
   const cur = rateAt(pay.rates, from);
   const head = cur && cur.from <= from ? [{ ...cur, from }] : [];
-  return { payDay: pay.payDay, rates: [...head, ...pay.rates.filter((r) => r.from > from)] };
+  return { payDay: pay.payDay, when: pay.when, rates: [...head, ...pay.rates.filter((r) => r.from > from)] };
 }
 /** Все группы и индивидуальные ученики преподавателя начинают начисляться заново с ближайшего срока. */
 function restartSources(st, teacherId, t) {
-  for (const g of st.groups) if (g.teacherId === teacherId) g.pay = rebasePay(g.pay, defaultStartYm(g.pay.payDay, t));
-  for (const s of st.students) if (!s.groupId && s.teacherId === teacherId && s.pay) s.pay = rebasePay(s.pay, defaultStartYm(s.pay.payDay, t));
+  for (const g of st.groups) if (g.teacherId === teacherId) g.pay = rebasePay(g.pay, payStartYm(g.pay, t));
+  for (const s of st.students) if (!s.groupId && s.teacherId === teacherId && s.pay) s.pay = rebasePay(s.pay, payStartYm(s.pay, t));
 }
 /** Заработанное преподавателем не должно пропадать, когда меняется привязка: группу передали другому или удалили,
     ученик ушёл в архив или в группу, поменялась схема оплаты. Сравниваем начисления до и после изменения и
@@ -475,7 +480,7 @@ export function restoreStudentIn(st, s) {
     s.endYm = null;
     if (dateFor(cur, s.payDay) < t && !(s.overrides[cur] != null)) s.firstDue = t;
   }
-  if (!s.groupId && s.pay) s.pay = rebasePay(s.pay, defaultStartYm(s.pay.payDay, t));
+  if (!s.groupId && s.pay) s.pay = rebasePay(s.pay, payStartYm(s.pay, t));
 }
 
 export const act = {
@@ -581,7 +586,7 @@ export const act = {
       }
       const movedOut = !isNew && !!s.groupId && !g, oldTeacher = s.teacherId, oldName = s.name;
       // в группе преподаватель ученика — преподаватель группы
-      Object.assign(s, { name, groupId: g ? g.id : '', projectId: g ? g.projectId : str(d.projectId), teacherId: g && g.teacherId ? g.teacherId : str(d.teacherId), subject: trimmed(d.subject), phone: trimmed(d.phone), telegram: tgHandle(d.telegram), notes: trimmed(d.notes), payDay });
+      Object.assign(s, { name, groupId: g ? g.id : '', projectId: g ? g.projectId : str(d.projectId), teacherId: g && g.teacherId ? g.teacherId : str(d.teacherId), subject: trimmed(d.subject), phone: trimmed(d.phone), telegram: tgHandle(d.telegram), notes: trimmed(d.notes), payDay, every: EVERY.includes(Math.round(num(d.every))) ? Math.round(num(d.every)) : 1 });
       s.payType = d.payType === 'package' ? 'package' : 'monthly';
       if (s.payType === 'package') {
         const used = Math.max(0, num(s.pkg && s.pkg.used)), size = Math.max(1, Math.round(num(d.pkgSize)) || 8);
@@ -594,7 +599,7 @@ export const act = {
       const teacherChanged = !isNew && oldTeacher !== s.teacherId;
       if (s.groupId) s.pay = null;
       else if (d.pay && !Array.isArray(d.pay.rates)) s.pay = mergePay(s.pay, d.pay, payDay, movedOut || teacherChanged);
-      else if (movedOut || teacherChanged) s.pay = { payDay: clampDay((s.pay && s.pay.payDay) || payDay), rates: [] };
+      else if (movedOut || teacherChanged) s.pay = { payDay: clampDay((s.pay && s.pay.payDay) || payDay), when: (s.pay && s.pay.when) || 'end', rates: [] };
       if (!isNew && oldName !== name) for (const p of st.payments) if (p.kind === 'income' && p.personId === s.id) p.personName = name;
       return s;
     }));
@@ -652,10 +657,10 @@ export const act = {
       if (isNew) { g = normalize({ groups: [{ id: uid(), color: st.groups.length % 8 }], students: [], payments: [] }).groups[0]; st.groups.push(g); }
       const oldPrice = g.price, oldTeacher = g.teacherId, oldName = g.name;
       const payDay = clampDay(d.payDay || g.payDay);
-      Object.assign(g, { name, projectId: str(d.projectId), teacherId: str(d.teacherId), subject: trimmed(d.subject), schedule: trimmed(d.schedule), payType: d.payType === 'package' ? 'package' : 'monthly', price: Math.max(0, num(d.price)), payDay, lessonsInPackage: Math.max(1, Math.round(num(d.lessonsInPackage)) || 8), notes: trimmed(d.notes) });
+      Object.assign(g, { name, projectId: str(d.projectId), teacherId: str(d.teacherId), subject: trimmed(d.subject), schedule: trimmed(d.schedule), payType: d.payType === 'package' ? 'package' : 'monthly', price: Math.max(0, num(d.price)), payDay, every: EVERY.includes(Math.round(num(d.every))) ? Math.round(num(d.every)) : 1, lessonsInPackage: Math.max(1, Math.round(num(d.lessonsInPackage)) || 8), notes: trimmed(d.notes) });
       if (Number.isInteger(d.color)) g.color = ((d.color % 8) + 8) % 8;
       if (d.pay && !Array.isArray(d.pay.rates)) g.pay = mergePay(g.pay, d.pay, payDay, !isNew && oldTeacher !== g.teacherId);
-      else if (!isNew && oldTeacher !== g.teacherId) g.pay = { payDay: g.pay.payDay, rates: [] };
+      else if (!isNew && oldTeacher !== g.teacherId) g.pay = { payDay: g.pay.payDay, when: g.pay.when, rates: [] };
       if (!isNew) {
         const from = isYm(d.applyFrom) ? d.applyFrom : null;
         for (const s of st.students) {
@@ -677,10 +682,10 @@ export const act = {
       const x = byId(st.groups, id), t = today(), cur = ymOf(t);
       x.archived = !!on;
       if (on) {
-        x.endYm = dateFor(cur, x.pay.payDay) <= t ? cur : ymAdd(cur, -1);
+        x.endYm = payDue(cur, x.pay) <= t ? cur : ymAdd(cur, -1);
         if (withStudents) for (const s of st.students) if (s.groupId === id && !s.archived) archiveStudentIn(st, s, false, mark);
       } else {
-        x.pay = rebasePay(x.pay, defaultStartYm(x.pay.payDay, t)); // месяцы в архиве преподавателю не начисляются
+        x.pay = rebasePay(x.pay, payStartYm(x.pay, t)); // месяцы в архиве преподавателю не начисляются
         x.endYm = null;
         for (const s of st.students) if (s.groupId === id && s.archived && s.archivedBy === mark) restoreStudentIn(st, s);
       }

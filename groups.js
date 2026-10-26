@@ -7,7 +7,9 @@ import { StudentRow, PaymentRow } from './home.js';
 
 const S = () => store.state;
 const byId = (list, id) => list.find((x) => x.id === id);
-const payLabel = (pay, ym) => { const r = pay && C.rateAt(pay.rates, ym); return r && r.amount > 0 ? `${r.mode === 'percent' ? `${r.amount}% от оплат` : `${money(r.amount)} в месяц`}, ${pay.payDay}-го` : ''; };
+export const whenLabel = (pay) => (pay.when === 'end' ? 'в конце месяца' : pay.when === 'next' ? `${pay.payDay}-го следующего месяца` : `${pay.payDay}-го`);
+const payLabel = (pay, ym) => { const r = pay && C.rateAt(pay.rates, ym); return r && r.amount > 0 ? `${r.mode === 'percent' ? `${r.amount}% от оплат` : `${money(r.amount)} в месяц`}, ${whenLabel(pay)}` : ''; };
+const everyNote = (x) => (C.everyOf(x) > 1 ? ` · ${C.everyLabel(C.everyOf(x))}` : '');
 
 // ---------- Группы ----------
 function groupStats(g, d) {
@@ -34,7 +36,7 @@ export function Groups() {
     ${groups.length ? html`<div class="gcards">${groups.map((g) => {
       const x = groupStats(g, d), t = byId(st.teachers, g.teacherId);
       return html`<section class=${cx('card gcard', g.archived && 'is-archived')} key=${g.id}>
-        <div class="row tap" style="padding:0;border:0" ...${tap(() => open('group', { id: g.id }))}><${Avatar} group name=${g.name} color=${g.color} /><div class="row-main"><div class="row-title"><span>${g.name}</span></div><div class="row-sub">${[t && t.name, g.schedule, g.payType === 'package' ? `абонемент ${g.lessonsInPackage} зан.` : `оплата ${g.payDay}-го`].filter(Boolean).join(' · ')}</div></div><${Icon} name="right" cls="faint" /></div>
+        <div class="row tap" style="padding:0;border:0" ...${tap(() => open('group', { id: g.id }))}><${Avatar} group name=${g.name} color=${g.color} /><div class="row-main"><div class="row-title"><span>${g.name}</span></div><div class="row-sub">${[t && t.name, g.schedule, g.payType === 'package' ? `абонемент ${g.lessonsInPackage} зан.` : `оплата ${g.payDay}-го${everyNote(g)}`].filter(Boolean).join(' · ')}</div></div><${Icon} name="right" cls="faint" /></div>
         <div class="gstats"><div><div class="label">Учеников</div><b>${x.members.length}</b></div><div><div class="label">Ждём оплату</div><b style=${x.due.length ? 'color:var(--overdue)' : ''}>${x.due.length ? money(x.dueSum) : '—'}</b></div><div><div class="label">Цена</div><b>${money(g.price)}</b></div></div>
         ${x.exp > 0 && html`<div><div class="spread small" style="margin-bottom:5px"><span class="muted">Сбор за ${C.ymName(d.ym)}</span><span class="num"><b>${money(x.got)}</b> из ${money(x.exp)}</span></div><${Meter} value=${x.got} max=${x.exp} /></div>`}
         ${x.members.length ? html`<div class="people">${order(x.members).map(person)}</div>` : html`<div class="hint">В группе пока нет учеников.</div>`}
@@ -61,7 +63,7 @@ function GroupSheetI({ id, close }) {
   return html`<${Sheet} title=${g.name} side onClose=${close}
     foot=${html`<div class="left"><button class="btn icon" aria-label="Ещё" onClick=${more}><${Icon} name="more" /></button><button class="btn" onClick=${() => open('groupForm', { id })}><${Icon} name="edit" cls="s" />Изменить</button></div>${!g.archived && html`<button class="btn primary" onClick=${() => open('studentForm', { groupId: id })}><${Icon} name="userPlus" cls="s" />Ученик</button>`}`}>
     <div class="stack">
-      <div class="row" style="padding:0;border:0"><${Avatar} group name=${g.name} color=${g.color} size="lg" /><div class="row-main"><div class="row-title"><span>${t ? t.name : 'Преподаватель не указан'}</span>${g.archived && html`<${Pill} status="muted">архив<//>`}</div><div class="row-sub wrap">${[g.subject, g.schedule, g.payType === 'package' ? `абонемент ${g.lessonsInPackage} зан. · ${money(g.price)}` : `${money(g.price)} в месяц · оплата ${g.payDay}-го`].filter(Boolean).join(' · ')}</div></div></div>
+      <div class="row" style="padding:0;border:0"><${Avatar} group name=${g.name} color=${g.color} size="lg" /><div class="row-main"><div class="row-title"><span>${t ? t.name : 'Преподаватель не указан'}</span>${g.archived && html`<${Pill} status="muted">архив<//>`}</div><div class="row-sub wrap">${[g.subject, g.schedule, g.payType === 'package' ? `абонемент ${g.lessonsInPackage} зан. · ${money(g.price)}` : `${money(g.price)} ${C.everyOf(g) > 1 ? `за ${C.everyOf(g)} мес.` : 'в месяц'} · оплата ${g.payDay}-го${everyNote(g)}`].filter(Boolean).join(' · ')}</div></div></div>
       ${x.exp > 0 && html`<div class="balance"><div class="spread"><div><div class="small muted">Сбор за ${C.ymName(d.ym)}</div><div class="big">${money(x.got)} <span class="muted" style="font-size:16px;font-weight:500">из ${money(x.exp)}</span></div></div>${x.due.length > 0 && html`<button class="btn good" onClick=${() => open('bulkPay', { groupId: id })}><${Icon} name="check" cls="s" />Отметить оплаты</button>`}</div><${Meter} value=${x.got} max=${x.exp} />${x.due.length > 0 && html`<div class="small">Ждём ${money(x.dueSum)} от ${x.due.length} ${C.plural(x.due.length, 'ученика', 'учеников', 'учеников')}</div>`}</div>`}
       ${t && html`<div><div class="sec-title">Оплата преподавателю</div>
         ${t.payType !== 'perGroup' ? html`<div class="hint">${t.name}: ${t.payType === 'salary' ? 'оклад' : 'оплата за занятия'} — отдельно по группам не начисляется.</div>`
