@@ -81,7 +81,11 @@ function PayoutSheetI({ id, close }) {
   const def = L.dueNow || (L.next ? L.next.rest : 0);
   const [v, set] = useForm({ amount: def ? String(def) : '', date: C.today(), method: S().settings.defaultMethod || '', note: '' });
   const amount = pos(v.amount);
-  const submit = () => { if (!amount) return; close(); act.payTeacher(id, { amount, date: v.date, method: v.method, note: v.note }); };
+  // что закроет эта выплата: начисления от старых к новым, остаток — аванс
+  const covers = []; let pool = amount;
+  for (const c of openLines) { if (pool <= 0) break; const take = C.r2(Math.min(pool, c.rest)); covers.push({ key: c.key, label: c.label, ym: c.ym, amount: take }); pool = C.r2(pool - take); }
+  const advance = pool;
+  const submit = () => { if (!amount) return; close(); act.payTeacher(id, { amount, date: v.date, method: v.method, note: v.note, covers, advance }); };
   return html`<${Sheet} title=${`Выплата · ${t.name}`} cls="narrow" onClose=${close} onSubmit=${submit}
     foot=${html`<button type="button" class="btn" onClick=${close}>Отмена</button><button type="submit" class="btn primary" disabled=${!amount}>Выплатить${amount ? ' ' + money(amount) : ''}</button>`}>
     <div class="stack" style="gap:14px">
@@ -91,6 +95,7 @@ function PayoutSheetI({ id, close }) {
       ${openLines.length > 1 && L.dueNow > 0 && html`<div class="quick"><button type="button" class=${cx('chip sm', amount === L.dueNow && 'is-active')} onClick=${() => set('amount', String(L.dueNow))}>К выплате сейчас · ${money(L.dueNow)}</button><button type="button" class=${cx('chip sm', amount === C.r2(openLines.reduce((a, c) => a + c.rest, 0)) && 'is-active')} onClick=${() => set('amount', String(C.r2(openLines.reduce((a, c) => a + c.rest, 0))))}>Всё начисленное · ${money(openLines.reduce((a, c) => a + c.rest, 0))}</button></div>`}
       <div class="field"><label>Дата</label><${DateChips} value=${v.date} onChange=${(x) => set('date', x)} /></div>
       <${MethodChips} value=${v.method} onChange=${(x) => set('method', x)} />
+      ${amount > 0 && html`<div class="hint">Эта выплата закроет: ${C.coversText(covers, advance, money)}.</div>`}
       <div class="field"><label for="po-note">Комментарий</label><input id="po-note" class="input" value=${v.note} onInput=${(e) => set('note', e.target.value)} placeholder="необязательно" /></div>
     </div>
   <//>`;
@@ -164,8 +169,9 @@ function PaymentSheetI({ id, close }) {
   const editCat = (p.kind === 'expense' && !p.recurringId) || p.kind === 'otherIncome';
   const save = () => { if (!amount) return; close(); act.updatePayment(id, { amount, date: v.date, note: v.note, method: v.method, projectId: v.projectId, ...(editCat ? { category: v.category } : {}), ...(p.lessons != null ? { lessons: C.parseAmount(v.lessons) || 0 } : {}) }); };
   return html`<${Sheet} title=${`${C.KIND_LABEL[p.kind]} · ${p.personName}`} cls="narrow" onClose=${close} onSubmit=${save}
-    foot=${html`<div class="left"><button type="button" class="btn danger" onClick=${() => { close(); act.deletePayment(id); }}><${Icon} name="trash" cls="s" />Удалить</button></div><button type="submit" class="btn primary" disabled=${!amount}>Сохранить</button>`}>
+    foot=${html`<div class="left"><button type="button" class="btn danger" onClick=${() => { close(); act.deletePayment(id); }}><${Icon} name="trash" cls="s" />${p.kind === 'salary' ? 'Отменить выплату' : 'Удалить'}</button></div><button type="submit" class="btn primary" disabled=${!amount}>Сохранить</button>`}>
     <div class="stack" style="gap:14px">
+      ${p.kind === 'salary' && (p.covers || p.advance) && html`<div class="preview"><span><b>За что:</b> ${C.coversText(p.covers, p.advance, money)}</span></div>`}
       <div class="field"><label for="pe-amount">Сумма</label><input id="pe-amount" class="input big" inputmode="decimal" autocomplete="off" value=${v.amount} onInput=${(e) => set('amount', e.target.value)} /></div>
       <div class="field"><label>Дата</label><${DateChips} value=${v.date} onChange=${(x) => set('date', x)} /></div>
       ${editCat && html`<div class="field"><label for="pe-cat">${p.kind === 'expense' ? 'Категория' : 'Что за доход'}</label><input id="pe-cat" class="input" list="pe-cats" value=${v.category} onInput=${(e) => set('category', e.target.value)} /><datalist id="pe-cats">${allCategories().map((c) => html`<option value=${c}></option>`)}</datalist></div>`}

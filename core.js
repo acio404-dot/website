@@ -371,6 +371,37 @@ export function teacherLedger(t, state, idx, opt = {}) {
     accrued: r2(lines.reduce((a, c) => a + c.amount, 0)),
   };
 }
+/** Какое начисление закрыла каждая выплата: выплаты (по датам) раскладываются по начислениям от старых к новым.
+    Возвращает byPay: id выплаты → { parts: [{ key, label, ym, amount }], advance }, и byLine: ключ начисления → [{ payId, date, amount }]. */
+export function allocatePayouts(lines, pays) {
+  const sorted = (pays || []).slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.createdAt || 0) - (b.createdAt || 0)));
+  const byPay = new Map(), byLine = new Map();
+  let li = 0, lineRest = lines.length ? r2(lines[0].amount) : 0;
+  for (const p of sorted) {
+    let pool = r2(Number(p.amount) || 0);
+    const parts = [];
+    while (pool > 0 && li < lines.length) {
+      const take = r2(Math.min(pool, lineRest));
+      if (take > 0) {
+        parts.push({ key: lines[li].key, label: lines[li].label, ym: lines[li].ym, amount: take });
+        if (!byLine.has(lines[li].key)) byLine.set(lines[li].key, []);
+        byLine.get(lines[li].key).push({ payId: p.id, date: p.date, amount: take });
+        pool = r2(pool - take); lineRest = r2(lineRest - take);
+      }
+      if (lineRest <= 0) { li++; lineRest = li < lines.length ? r2(lines[li].amount) : 0; }
+    }
+    byPay.set(p.id, { parts, advance: pool });
+  }
+  return { byPay, byLine };
+}
+/** «за октябрь: Group #1 $300, Group J1 $150; аванс $50» */
+export function coversText(parts, advance, money) {
+  const byYm = new Map();
+  for (const x of parts || []) { const k = x.ym || ''; if (!byYm.has(k)) byYm.set(k, []); byYm.get(k).push(`${x.label}${money ? ' ' + money(x.amount) : ''}`); }
+  const out = [...byYm.entries()].sort().map(([ym, ls]) => `${ym ? 'за ' + ymName(ym) + ': ' : ''}${ls.join(', ')}`);
+  if (advance > 0) out.push(`аванс${money ? ' ' + money(advance) : ''}`);
+  return out.join('; ');
+}
 /** Сколько строк «за группу / ученика» у преподавателя ещё без суммы. */
 export function teacherUnset(t, state) {
   if (t.payType !== 'perGroup') return [];

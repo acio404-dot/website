@@ -141,6 +141,9 @@ export function normalize(raw) {
     if (p.groupId != null) o.groupId = str(p.groupId);
     if (str(p.recurringId)) { o.recurringId = str(p.recurringId); if (isYm(p.period)) o.period = p.period; }
     if (p.lessons != null) o.lessons = num(p.lessons);
+    // что закрыла выплата преподавателю (записывается в момент выплаты)
+    if (Array.isArray(p.covers)) { const c = p.covers.filter((x) => x && num(x.amount) > 0).map((x) => ({ key: str(x.key), label: str(x.label), ym: isYm(x.ym) ? x.ym : '', amount: r2(num(x.amount)) })); if (c.length) o.covers = c; }
+    if (num(p.advance) > 0) o.advance = r2(num(p.advance));
     for (const k of ['legacy', 'auto']) if (p[k] === true) o[k] = true;
     if (str(p.sourceId)) o.sourceId = str(p.sourceId);
     const created = typeof p.createdAt === 'number' ? p.createdAt : typeof p.createdAt === 'string' ? Date.parse(p.createdAt) : NaN;
@@ -505,6 +508,8 @@ export const act = {
     const t = byId(store.state.teachers, id); if (!t) return null;
     const amount = r2(Math.abs(num(v.amount))); if (!amount) return null;
     const p = { id: uid(), kind: 'salary', date: dateOr(v.date), amount, personId: t.id, personName: t.name, category: 'Зарплаты', projectId: t.projectId || '', note: trimmed(v.note), method: str(v.method ?? store.state.settings.defaultMethod), createdAt: Date.now() };
+    if (Array.isArray(v.covers) && v.covers.length) p.covers = v.covers;
+    if (num(v.advance) > 0) p.advance = r2(num(v.advance));
     return store.commit(`Выплата: ${t.name} — ${money(amount)}`, (st) => { st.payments.push(p); return p; }, { action: { type: 'payment', id: p.id } });
   },
   payRecurring(id, ym, v = {}) {
@@ -551,7 +556,7 @@ export const act = {
   },
   deletePayment(id) {
     const p = byId(store.state.payments, id); if (!p) return;
-    store.commit(`Запись удалена: ${p.personName} — ${money(p.amount)}`, (st) => {
+    store.commit(`${p.kind === 'salary' ? 'Выплата отменена' : 'Запись удалена'}: ${p.personName} — ${money(p.amount)}`, (st) => {
       st.payments = st.payments.filter((x) => x.id !== id);
       // удалённое автосписание не должно тут же записаться заново: месяц помечается пропущенным
       const r = p.auto && p.recurringId && p.period ? byId(st.recurring, p.recurringId) : null;

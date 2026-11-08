@@ -120,10 +120,23 @@ function Upcoming({ d }) {
 }
 
 /** Строка операции. own — внутри карточки человека: вместо имени показываем дату. */
+/** За что ушла выплата преподавателю: записано при выплате, а для старых записей — по текущему расчёту. */
+const allocCache = new WeakMap();
+export function payoutFor(p) {
+  if (p.kind !== 'salary' || p.legacy) return '';
+  if (p.covers || p.advance) return C.coversText(p.covers, p.advance);
+  const d = getDerived(), L = p.personId && d.teacher(p.personId);
+  if (!L) return '';
+  let m = allocCache.get(d); if (!m) { m = new Map(); allocCache.set(d, m); }
+  if (!m.has(p.personId)) m.set(p.personId, C.allocatePayouts(L.lines, S().payments.filter((x) => x.kind === 'salary' && x.personId === p.personId && !x.legacy)));
+  const a = m.get(p.personId).byPay.get(p.id);
+  return a ? C.coversText(a.parts, a.advance) : '';
+}
 export function PaymentRow({ p, own }) {
   const inc = C.isIn(p);
-  const what = p.kind === 'income' ? p.category || 'индивидуально' : C.KIND_LABEL[p.kind].toLowerCase();
-  return html`<div class="row tap" ...${tap(() => open('payment', { id: p.id }))}><${Avatar} icon=${inc ? 'in' : p.kind === 'salary' ? 'cash' : p.recurringId ? 'repeat' : 'out'} size="sm" /><div class="row-main"><div class="row-title"><span>${own ? C.fmtDate(p.date, true) : p.personName}</span></div><div class="row-sub">${(own ? [p.method, p.note] : [C.fmtDate(p.date), what, p.method, p.note]).filter(Boolean).join(' · ') || what}</div></div><span class=${cx('row-amount', inc && 'in')}>${inc ? '+' : '−'}${money(p.amount)}</span></div>`;
+  const forWhat = payoutFor(p);
+  const what = p.kind === 'income' ? p.category || 'индивидуально' : forWhat ? `зарплата ${forWhat}` : C.KIND_LABEL[p.kind].toLowerCase();
+  return html`<div class="row tap" ...${tap(() => open('payment', { id: p.id }))}><${Avatar} icon=${inc ? 'in' : p.kind === 'salary' ? 'cash' : p.recurringId ? 'repeat' : 'out'} size="sm" /><div class="row-main"><div class="row-title"><span>${own ? C.fmtDate(p.date, true) : p.personName}</span></div><div class="row-sub wrap">${(own ? [forWhat || null, p.method, p.note] : [C.fmtDate(p.date), what, p.method, p.note]).filter(Boolean).join(' · ') || what}</div></div><span class=${cx('row-amount', inc && 'in')}>${inc ? '+' : '−'}${money(p.amount)}</span></div>`;
 }
 function Recent({ d }) {
   const list = useMemo(() => d.payments.slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0) || b.date.localeCompare(a.date)).slice(0, 6), [d]);
