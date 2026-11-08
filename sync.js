@@ -5,6 +5,7 @@ import { html, useState, useEffect } from './vendor.js';
 import { store, hasData, normalize } from './store.js';
 import * as C from './core.js';
 import { Sheet, Icon, cx, toast, openSheet, sheets } from './ui.js';
+import { merge3, hash53, body } from './merge.js';
 
 const KEY_SYNC = 'tryos-finance-sync';
 const API = '/api/sync';
@@ -33,20 +34,33 @@ async function unseal(key, data) {
 }
 
 const stampOf = (st) => `${st.meta.rev || 0}|${st.meta.updatedAt || ''}`;
-const body = (st) => JSON.stringify({ ...st, meta: null });
 const sameData = (a, b) => body(a) === body(b);
+const KEY_BASE = KEY_SYNC + ':base';
 
-/** cfg: { login, id, key, etag, stamp, syncedAt }. status: off | ok | busy | offline | error | conflict. */
+/** cfg: { login, id, key, etag, stamp, syncedAt, baseHash }. status: off | ok | busy | offline | error | conflict. */
 export const sync = { cfg: null, status: 'off', error: '', conflict: null, lastCheck: 0 };
 const paint = () => { store.rev++; store.emit(); };
 const set = (status, error = '') => { sync.status = status; sync.error = error; paint(); };
 const saveCfg = () => { try { if (sync.cfg) localStorage.setItem(KEY_SYNC, JSON.stringify(sync.cfg)); else localStorage.removeItem(KEY_SYNC); } catch { /* приватный режим */ } };
 const dirty = () => !!sync.cfg && stampOf(store.state) !== sync.cfg.stamp;
-const mark = (etag) => { Object.assign(sync.cfg, { etag, stamp: stampOf(store.state), syncedAt: new Date().toISOString() }); saveCfg(); };
+/** База — последняя версия, одинаковая здесь и в аккаунте. По ней видно, кто что менял с тех пор. */
+function saveBase(st) {
+  const b = body(st);
+  sync.cfg.baseHash = hash53(b);
+  try { localStorage.setItem(KEY_BASE, b); } catch { try { localStorage.removeItem(KEY_BASE); } catch { /* нет места — обойдёмся хешем */ } }
+}
+function loadBase() {
+  if (!sync.cfg || !sync.cfg.baseHash) return null;
+  try { const b = localStorage.getItem(KEY_BASE); return b && hash53(b) === sync.cfg.baseHash ? JSON.parse(b) : null; } catch { return null; }
+}
+const dropBase = () => { try { localStorage.removeItem(KEY_BASE); } catch { /* ничего */ } };
+/** Данные здесь и в аккаунте совпадают: запоминаем версию и базу. */
+const mark = (etag) => { Object.assign(sync.cfg, { etag, stamp: stampOf(store.state), syncedAt: new Date().toISOString() }); saveBase(store.state); saveCfg(); };
 
 async function call(method, id, etag, payload) {
   let r;
-  try { r = await fetch(API, { method, cache: 'no-store', headers: { 'x-sync-id': id, ...(method === 'GET' && etag ? { 'x-sync-etag': etag } : {}), ...(payload ? { 'content-type': 'application/json' } : {}) }, body: payload ? JSON.stringify(payload) : undefined }); }
+  const text = payload ? JSON.stringify(payload) : undefined;
+  try { r = await fetch(API, { method, cache: 'no-store', keepalive: !!text && text.length < 60000, headers: { 'x-sync-id': id, ...(method === 'GET' && etag ? { 'x-sync-etag': etag } : {}), ...(text ? { 'content-type': 'application/json' } : {}) }, body: text }); }
   catch { throw Object.assign(new Error('Нет связи с сервером'), { offline: true }); }
   let j = null;
   try { j = await r.json(); } catch { /* не JSON */ }
@@ -63,18 +77,38 @@ async function remote(cfg, useEtag) {
   return { etag: r.j.etag, state: st };
 }
 function clash(r) { sync.conflict = { state: r.state, etag: r.etag }; set('conflict'); if (!openConflict.shown) openSheet(ConflictSheet, {}); }
+/** Данные разошлись. Если известно, от чего обе стороны отталкивались, — объединяем сами; иначе спрашиваем. */
+async function reconcile(r) {
+  const base = loadBase();
+  const baseHash = sync.cfg.baseHash;
+  // аккаунт не менялся с нашей последней сверки (только метка версии другая) — просто отправляем своё.
+  // Узнаём это по сохранённой базе, а если её нет (прежняя версия дашборда) — по номеру и времени версии, которую мы отправляли
+  if ((baseHash && hash53(body(r.state)) === baseHash) || (sync.cfg.stamp && stampOf(r.state) === sync.cfg.stamp)) { sync.cfg.etag = r.etag; saveCfg(); return push(true); }
+  if (!base) return clash(r);
+  const m = merge3(base, store.state, r.state);
+  store.adopt(m.state, 'Перед объединением с аккаунтом');
+  sync.cfg.etag = r.etag; saveCfg();
+  await push(true);
+  if (sync.status === 'ok') toast(m.clashes ? `Изменения с другого устройства объединены. ${m.clashes} ${C.plural(m.clashes, 'запись правили', 'записи правили', 'записей правили')} на обоих устройствах — взята более поздняя версия` : 'Изменения с другого устройства объединены');
+}
 
-let pushing = false, timer = 0, firstDirty = 0;
+let pushing = false, timer = 0, firstDirty = 0, rounds = 0;
 /** Отправить данные этого устройства в аккаунт. */
 export async function push(force) {
   clearTimeout(timer); firstDirty = 0;
   if (!sync.cfg || sync.conflict || pushing || (!force && !dirty())) return;
   pushing = true; set('busy');
   try {
-    const stamp = stampOf(store.state);
-    const r = await call('PUT', sync.cfg.id, null, { etag: sync.cfg.etag || null, doc: { data: await seal(sync.cfg.key, store.state) } });
-    if (r.status === 409) { pushing = false; return await pull(true); }
-    Object.assign(sync.cfg, { etag: r.j.etag, stamp, syncedAt: new Date().toISOString() }); saveCfg();
+    const stamp = stampOf(store.state), snapshot = store.state;
+    const r = await call('PUT', sync.cfg.id, null, { etag: sync.cfg.etag || null, doc: { data: await seal(sync.cfg.key, snapshot) } });
+    if (r.status === 409) {
+      pushing = false;
+      // сервер раз за разом не принимает нашу версию — не крутимся до бесконечности
+      if (++rounds > 3) { rounds = 0; set('error', 'Не удаётся согласовать данные с аккаунтом. Нажмите «Синхронизировать» позже'); return; }
+      return await pull(true);
+    }
+    rounds = 0;
+    Object.assign(sync.cfg, { etag: r.j.etag || null, stamp, syncedAt: new Date().toISOString() }); saveBase(snapshot); saveCfg();
     set('ok');
   } catch (e) { set(e.offline ? 'offline' : 'error', e.message); }
   finally { pushing = false; }
@@ -90,37 +124,39 @@ export async function pull(force) {
     if (!r) { sync.cfg.etag = null; return await push(true); } // файла в аккаунте нет — кладём свой
     if (sameData(r.state, store.state)) { mark(r.etag); set('ok'); }
     else if (!dirty()) { store.adopt(r.state, 'Перед обновлением из аккаунта'); mark(r.etag); set('ok'); toast('Данные обновлены из аккаунта'); }
-    else clash(r);
+    else await reconcile(r);
   } catch (e) { set(e.offline ? 'offline' : 'error', e.message); }
 }
 function schedule() {
   if (!sync.cfg || sync.conflict) return;
   if (!firstDirty) firstDirty = Date.now();
   clearTimeout(timer);
-  // ждём паузу в 8 секунд после последнего изменения, но не дольше 40 секунд от первого
-  timer = setTimeout(() => { if (document.visibilityState !== 'hidden') push(); }, Math.max(500, Math.min(8000, 40000 - (Date.now() - firstDirty))));
+  // ждём паузу в 2,5 секунды после последнего изменения, но не дольше 15 секунд от первого
+  timer = setTimeout(() => push(), Math.max(300, Math.min(2500, 15000 - (Date.now() - firstDirty))));
 }
-/** Выбор при расхождении: 'remote' — взять данные аккаунта, 'local' — оставить данные этого устройства. */
+/** Выбор при расхождении: 'remote' — взять данные аккаунта, 'local' — оставить данные этого устройства, 'merge' — объединить. */
 export async function resolve(choice) {
   const c = sync.conflict; if (!c || !sync.cfg) return;
   sync.conflict = null;
   if (choice === 'remote') { store.adopt(c.state, 'Перед загрузкой из аккаунта'); mark(c.etag); set('ok'); toast('Загружены данные из аккаунта. Прежние данные этого устройства — в автоснимках'); }
+  else if (choice === 'merge') { const m = merge3(null, store.state, c.state); store.adopt(m.state, 'Перед объединением с аккаунтом'); sync.cfg.etag = c.etag; saveCfg(); await push(true); if (sync.status === 'ok') toast('Данные объединены и отправлены в аккаунт'); }
   else { sync.cfg.etag = c.etag; saveCfg(); await push(true); if (sync.status === 'ok') toast('Данные этого устройства отправлены в аккаунт'); }
 }
 export async function signIn(login, password, create) {
   const l = normLogin(login);
   if (!crypto || !crypto.subtle) throw new Error('Этот браузер не умеет шифровать данные — откройте сайт по адресу https://');
   const k = await derive(l, password);
-  const cfg = { login: l, id: k.id, key: k.key, etag: null, stamp: '', syncedAt: null };
+  const cfg = { login: l, id: k.id, key: k.key, etag: null, stamp: '', syncedAt: null, baseHash: '' };
   const r = await remote(cfg, false);
   if (!r && !create) throw new Error('Неверный логин или пароль');
   sync.cfg = cfg; sync.conflict = null; saveCfg();
   if (!r) { await push(true); if (sync.status !== 'ok') { const msg = sync.error || 'Не удалось создать аккаунт'; signOut(); throw new Error(msg); } return 'created'; }
-  if (!hasData(store.state) || sameData(r.state, store.state)) { if (!sameData(r.state, store.state)) store.adopt(r.state); mark(r.etag); set('ok'); return 'loaded'; }
+  // на устройстве пусто или только демо — берём данные аккаунта без вопросов
+  if (!hasData(store.state) || store.state.meta.demo || sameData(r.state, store.state)) { if (!sameData(r.state, store.state)) store.adopt(r.state); mark(r.etag); set('ok'); return 'loaded'; }
   clash(r);
   return 'conflict';
 }
-export function signOut() { clearTimeout(timer); sync.cfg = null; sync.conflict = null; saveCfg(); set('off'); }
+export function signOut() { clearTimeout(timer); sync.cfg = null; sync.conflict = null; saveCfg(); dropBase(); set('off'); }
 
 /** Запуск при открытии дашборда. Возвращает обещание, которое выполняется после первой сверки с аккаунтом (или через 5 секунд). */
 export function startSync() {
@@ -128,11 +164,13 @@ export function startSync() {
   if (sync.cfg && !(sync.cfg.id && sync.cfg.key)) sync.cfg = null;
   sync.status = sync.cfg ? 'ok' : 'off';
   store.subscribe(() => { if (sync.cfg && !sync.conflict && !pushing && dirty()) schedule(); });
+  const flush = () => { if (sync.cfg && dirty()) push(); };
   document.addEventListener('visibilitychange', () => {
     if (!sync.cfg) return;
-    if (document.visibilityState === 'hidden') { if (dirty()) push(); }
+    if (document.visibilityState === 'hidden') flush();
     else if (Date.now() - sync.lastCheck > 60000) pull();
   });
+  window.addEventListener('pagehide', flush);
   setInterval(() => { if (sync.cfg && document.visibilityState !== 'hidden' && Date.now() - sync.lastCheck > 290000) pull(); }, 60000);
   window.addEventListener('online', () => { if (sync.cfg) pull(); });
   window.addEventListener('storage', (e) => { if (e.key === KEY_SYNC) { try { sync.cfg = JSON.parse(e.newValue || 'null'); } catch { sync.cfg = null; } if (!sync.cfg) { sync.conflict = null; sync.status = 'off'; } paint(); } });
@@ -184,11 +222,13 @@ function ConflictSheet({ close }) {
   useEffect(() => { openConflict.shown = true; return () => { openConflict.shown = false; }; }, []);
   const done = (choice) => { close(); if (choice) resolve(choice); };
   if (!c) { return html`<${Sheet} title="Синхронизация" cls="narrow" onClose=${() => done()}><p class="muted">Расхождений больше нет.</p><//>`; }
+  const lt = Date.parse(store.state.meta.updatedAt || 0) || 0, rt = Date.parse(c.state.meta.updatedAt || 0) || 0;
   return html`<${Sheet} title="Какие данные оставить?" cls="narrow" onClose=${() => done()}
-    foot=${html`<button class="btn" onClick=${() => done('local')}>Это устройство</button><button class="btn primary" onClick=${() => done('remote')}>Из аккаунта</button>`}>
+    foot=${html`<button class="btn" onClick=${() => done('merge')}>Объединить</button><button class=${cx('btn', lt > rt && 'primary')} onClick=${() => done('local')}>Это устройство</button><button class=${cx('btn', lt <= rt && 'primary')} onClick=${() => done('remote')}>Из аккаунта</button>`}>
     <div class="stack" style="gap:12px">
-      <p class="muted">Данные в аккаунте и на этом устройстве различаются. Выберите, какие считать правильными — вторые сохранятся в автоснимках этого устройства.</p>
+      <p class="muted">На этом устройстве и в аккаунте — разные наборы данных, и дашборд не знает, от какой общей версии они пошли. Такое бывает при первом входе в аккаунт на устройстве, где уже что-то записано. Что не выберете — останется в автоснимках этого устройства.</p>
       <div class="preview"><span><b>В аккаунте:</b> ${count(c.state)}</span><span><b>На этом устройстве:</b> ${count(store.state)}</span></div>
+      <p class="hint">«Объединить» сложит записи с обеих сторон вместе: подходит, если и там и тут настоящие данные. Обычно же правильнее взять ту сторону, где изменения свежее${lt > rt ? ' — это устройство' : rt > lt ? ' — аккаунт' : ''}.</p>
     </div>
   <//>`;
 }

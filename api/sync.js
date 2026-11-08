@@ -6,6 +6,7 @@ const ID = /^[a-f0-9]{64}$/;
 const MAX = 3000000;
 const ACCESS = process.env.BLOB_ACCESS === 'public' ? 'public' : 'private';
 const blob = () => globalThis.__tryosBlob || require('@vercel/blob');
+const bare = (e) => String(e || '').replace(/^W\//, '').replace(/^"|"$/g, '');
 
 module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -14,7 +15,7 @@ module.exports = async (req, res) => {
   if (!globalThis.__tryosBlob && !process.env.BLOB_READ_WRITE_TOKEN) return res.status(503).json({ error: 'Хранилище для синхронизации ещё не подключено' });
   const path = `sync/${id}.json`;
   try {
-    const { get, put } = blob();
+    const { get, put, head } = blob();
     if (req.method === 'GET') {
       const etag = String(req.headers['x-sync-etag'] || '');
       const r = await get(path, { access: ACCESS, useCache: false, ...(etag ? { ifNoneMatch: etag } : {}) });
@@ -29,13 +30,23 @@ module.exports = async (req, res) => {
       if (typeof doc.data !== 'string' || !doc.data || doc.data.length > MAX) return res.status(400).json({ error: 'Неверные данные' });
       const etag = typeof body.etag === 'string' && body.etag ? body.etag : null;
       const text = JSON.stringify({ v: 1, at: new Date().toISOString(), data: doc.data });
+      const opts = { access: ACCESS, contentType: 'application/json', addRandomSuffix: false };
+      const isPrecondition = (e) => e && (e.name === 'BlobPreconditionFailedError' || /precondition|already exists|allowOverwrite/i.test(String(e.message)));
       try {
         // первая запись — только если файла ещё нет; дальше — только поверх той версии, которую видел клиент
-        const out = await put(path, text, { access: ACCESS, contentType: 'application/json', addRandomSuffix: false, allowOverwrite: !!etag, ...(etag ? { ifMatch: etag } : {}) });
+        const out = await put(path, text, { ...opts, allowOverwrite: !!etag, ...(etag ? { ifMatch: etag } : {}) });
         return res.status(200).json({ etag: out.etag });
       } catch (e) {
-        if (e && (e.name === 'BlobPreconditionFailedError' || /precondition|already exists|allowOverwrite/i.test(String(e.message)))) return res.status(409).json({ error: 'На другом устройстве были изменения' });
-        throw e;
+        if (!isPrecondition(e)) throw e;
+        // метка версии у клиента может отличаться только записью (кавычки, префикс W/): это та же версия — записываем
+        if (etag) {
+          const cur = await head(path, { access: ACCESS }).catch(() => null);
+          if (cur && bare(cur.etag) === bare(etag) && cur.etag !== etag) {
+            try { const out = await put(path, text, { ...opts, allowOverwrite: true, ifMatch: cur.etag }); return res.status(200).json({ etag: out.etag }); }
+            catch (e2) { if (!isPrecondition(e2)) throw e2; }
+          }
+        }
+        return res.status(409).json({ error: 'На другом устройстве были изменения' });
       }
     }
     res.setHeader('Allow', 'GET, PUT');
