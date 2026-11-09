@@ -18,9 +18,13 @@ export const DEFAULT_TEMPLATES = {
   overdue: 'Здравствуйте, {имя}! По нашим записям оплата за {месяц} ({сумма}) ещё не поступила, срок был {срок}. Подскажите, пожалуйста, когда получится оплатить?',
 };
 export const HOME_WIDGETS = [
-  ['kpi', 'Главные цифры'], ['tasks', 'Сделать сегодня'], ['forecast', 'Деньги на 4 недели'], ['attention', 'Кто должен'], ['leaks', 'Где теряются деньги'], ['payouts', 'Выплатить и оплатить'],
-  ['economy', 'Экономика групп'], ['cashflow', 'График доходов и расходов'], ['upcoming', 'Ближайшие 7 дней'], ['recent', 'Последние операции'],
+  ['kpi', 'Главные цифры'], ['attention', 'Получить деньги — кто должен'], ['payouts', 'Выплатить — зарплаты и подписки'], ['leaks', 'Где теряются деньги (только если есть проблемы)'], ['forecast', 'Деньги на 4 недели'],
+  ['tasks', 'Сделать сегодня'], ['economy', 'Экономика групп'], ['cashflow', 'График доходов и расходов'], ['upcoming', 'Ближайшие 7 дней'], ['recent', 'Последние операции'],
 ];
+// Обзор по умолчанию — только главное; остальные блоки есть в своих разделах и включаются в настройках.
+const HOME_OFF = new Set(['tasks', 'economy', 'cashflow', 'upcoming', 'recent']);
+const HOME_V = 2;
+const homeDefault = () => HOME_WIDGETS.map(([id]) => ({ id, on: !HOME_OFF.has(id) }));
 export const ACCENTS = ['blue', 'violet', 'green', 'orange', 'pink', 'graphite'];
 
 export const defaultSettings = () => ({
@@ -28,7 +32,7 @@ export const defaultSettings = () => ({
   theme: 'auto', accent: 'blue', density: 'cozy',
   quickPay: true, methods: ['Наличные', 'Карта', 'Перевод'], defaultMethod: '',
   categories: [], templates: { ...DEFAULT_TEMPLATES }, messenger: 'whatsapp',
-  home: HOME_WIDGETS.map(([id]) => ({ id, on: true })), backupDays: 7, sheets: [],
+  home: homeDefault(), homeV: HOME_V, backupDays: 7, sheets: [],
 });
 export const emptyState = () => ({
   v: SCHEMA, meta: { createdAt: new Date().toISOString(), updatedAt: null, rev: 0, lastBackupAt: null },
@@ -70,8 +74,9 @@ export function normalize(raw) {
   if (M.migratedFrom) { out.meta.migratedFrom = str(M.migratedFrom); out.meta.migratedAt = when(M.migratedAt); }
   if (M.demo === true) { out.meta.demo = true; out.meta.demoRev = Math.max(0, Math.round(num(M.demoRev))); }
   const known = new Set(HOME_WIDGETS.map(([id]) => id));
-  const home = (Array.isArray(S0.home) ? S0.home : []).filter((w) => w && known.has(w.id)).map((w) => ({ id: w.id, on: w.on !== false }));
-  for (const [id] of HOME_WIDGETS) if (!home.some((w) => w.id === id)) home.push({ id, on: true });
+  // раскладка обзора поменялась — один раз переводим на новую, дальше уважаем выбор пользователя
+  const home = num(S0.homeV) < HOME_V ? homeDefault() : (Array.isArray(S0.home) ? S0.home : []).filter((w) => w && known.has(w.id)).map((w) => ({ id: w.id, on: w.on !== false }));
+  for (const [id] of HOME_WIDGETS) if (!home.some((w) => w.id === id)) home.push({ id, on: !HOME_OFF.has(id) });
   const list = (v) => [...new Set((Array.isArray(v) ? v : []).map((c) => str(c).trim()).filter(Boolean))];
   out.settings = {
     orgName: str(S0.orgName).trim() || D.orgName, currency: str(S0.currency).trim().slice(0, 6) || '$', currencyPos: ['auto', 'before', 'after'].includes(S0.currencyPos) ? S0.currencyPos : 'auto',
@@ -79,7 +84,7 @@ export function normalize(raw) {
     theme: ['auto', 'light', 'dark'].includes(S0.theme) ? S0.theme : 'auto', accent: ACCENTS.includes(S0.accent) ? S0.accent : 'blue', density: ['cozy', 'compact'].includes(S0.density) ? S0.density : 'cozy',
     quickPay: S0.quickPay !== false, methods: Array.isArray(S0.methods) ? list(S0.methods) : D.methods, defaultMethod: str(S0.defaultMethod),
     categories: list(S0.categories), templates: { soon: str(T.soon).trim() ? str(T.soon) : DEFAULT_TEMPLATES.soon, overdue: str(T.overdue).trim() ? str(T.overdue) : DEFAULT_TEMPLATES.overdue },
-    messenger: ['whatsapp', 'telegram'].includes(S0.messenger) ? S0.messenger : 'whatsapp', home,
+    messenger: ['whatsapp', 'telegram'].includes(S0.messenger) ? S0.messenger : 'whatsapp', home, homeV: HOME_V,
     backupDays: S0.backupDays == null ? D.backupDays : Math.max(0, Math.min(365, Math.round(num(S0.backupDays)))),
     sheets: (Array.isArray(S0.sheets) ? S0.sheets : []).filter((x) => x && typeof x === 'object' && !Array.isArray(x)).map(normSheet),
     // остаток в кассе на дату: дальше он меняется сам по записанным оплатам и расходам

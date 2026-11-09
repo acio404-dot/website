@@ -63,26 +63,26 @@ function Hero({ d, i }) {
     <button class=${cx('hero', i.owed > 0 ? 'warn' : 'calm')} onClick=${goDebtors}>
       <span class="hero-label"><${Icon} name=${i.owed > 0 ? 'alert' : 'check'} cls="s" />${i.owed > 0 ? 'Вам должны' : 'Просроченных долгов нет'}</span>
       <span class="hero-value">${money(i.owed)}</span>
-      <span class="hero-sub">${i.debtors.length ? `${i.debtors.length} ${C.plural(i.debtors.length, 'ученик', 'ученика', 'учеников')} просрочили оплату` : 'все платят вовремя'}${soon > 0 ? ` · ещё ${money(soon)} — срок в ближайшие ${d.remindDays} ${C.plural(d.remindDays, 'день', 'дня', 'дней')}` : ''}</span>
+      <span class="hero-sub">${i.debtors.length ? `${i.debtors.length} ${C.plural(i.debtors.length, 'ученик просрочил', 'ученика просрочили', 'учеников просрочили')} оплату` : 'все платят вовремя'}${soon > 0 ? ` · скоро ещё ${money(soon)}` : ''}</span>
       ${i.owed > 0 && html`<span class="aging">${i.aging.map((b) => html`<span class=${cx('ag', b.key, !(b.amount > 0) && 'zero')} key=${b.key}><b>${money(b.amount)}</b><small>${b.label}</small></span>`)}</span>`}
     </button>
     <div class="kpi">
       <span class="kpi-label">Собрано за ${C.ymName(d.ym)}</span>
       <span class="kpi-value">${moneyBig(eco.collected)}</span>
       <div class=${cx('meter', pct >= 100 && 'done')} style="margin:6px 0 4px"><i style=${`width:${pct}%`}></i></div>
-      <span class="kpi-sub">${eco.income > 0 ? `${pct}% из ${money(eco.income)}${eco.income > eco.collected ? ` · осталось ${money(C.r2(eco.income - eco.collected))}` : ''}` : 'начислений пока нет'}</span>
+      <span class="kpi-sub">${eco.income > 0 ? `${pct}% из ${money(eco.income)}` : 'начислений пока нет'}</span>
     </div>
     <button class="kpi" onClick=${() => { store.setUI({ payrollTab: 'due' }); go('teachers'); }}>
       <span class="kpi-label">Выплатить сейчас</span>
       <span class=${cx('kpi-value', payLate > 0 && 'neg')}>${moneyBig(C.r2(payNow + recNow))}</span>
       <span class="kpi-sub">${payNow + recNow > 0 ? [payNow > 0 && `зарплаты ${money(payNow)}`, recNow > 0 && `подписки ${money(recNow)}`].filter(Boolean).join(' · ') : 'никому не должны'}</span>
-      ${payLate > 0 && html`<span class="kpi-sub" style="color:var(--overdue)">из них просрочено ${money(payLate)}</span>`}
+      ${payLate > 0 && html`<span class="kpi-sub extra" style="color:var(--overdue)">из них просрочено ${money(payLate)}</span>`}
     </button>
     <button class="kpi" onClick=${() => { store.setUI({ financeTab: 'month' }); go('finance'); }}>
       <span class="kpi-label">Прибыль ${C.ymGen(d.ym)}</span>
       <span class=${cx('kpi-value', forecast < 0 && 'neg')}>${moneyBig(forecast)}</span>
-      <span class="kpi-sub">прогноз, если все оплатят</span>
-      <span class="kpi-sub">сейчас по кассе ${money(k.cur.net)}</span>
+      <span class="kpi-sub">если все оплатят</span>
+      <span class="kpi-sub extra">сейчас по кассе ${money(k.cur.net)}</span>
     </button>
   </div>`;
 }
@@ -138,7 +138,6 @@ function Tasks({ d, i }) {
 // ---------- Где теряются деньги ----------
 function Leaks({ d, i }) {
   const [open1, setOpen] = useState('');
-  const [showOk, setShowOk] = useState(false);
   const st = S();
   const sRow = (s, right, sub) => html`<div class="row tap" key=${s.id} ...${tap(() => open('student', { id: s.id }))}><div class="row-main"><div class="row-title"><span>${s.name}</span></div>${sub && html`<div class="row-sub">${sub}</div>`}</div>${right}</div>`;
   const checks = [
@@ -160,6 +159,7 @@ function Leaks({ d, i }) {
       action: i.advances.length ? () => open('teacher', { id: i.advances[0].teacher.id }) : null },
   ];
   const bad = checks.filter((c) => c.bad), ok = checks.filter((c) => !c.bad);
+  if (!bad.length) return null; // всё в порядке — блок не занимает место
   const row = (c) => html`<div key=${c.key}>
     <button class=${cx('task', c.bad ? c.tone : 'ok', open1 === c.key && 'is-open')} aria-expanded=${open1 === c.key} onClick=${() => (c.list && c.bad ? setOpen(open1 === c.key ? '' : c.key) : c.action && c.action())}>
       <span class=${cx('task-ic', c.bad ? c.tone : 'good')}><${Icon} name=${c.bad ? (c.tone === 'info' ? 'info' : 'alert') : 'check'} /></span>
@@ -170,8 +170,7 @@ function Leaks({ d, i }) {
   </div>`;
   return html`<section class="card flush">
     <div class="card-head"><div><h2>Где теряются деньги</h2><div class="hint">${bad.length ? `${bad.length} из ${checks.length} проверок требуют внимания` : 'Все проверки пройдены'}</div></div><span class=${cx('score', bad.some((c) => c.tone === 'bad') ? 'bad' : bad.length ? 'warn' : 'good')}>${checks.length - bad.length}/${checks.length}</span></div>
-    <div class="rows">${bad.map(row)}${(showOk || !bad.length) && ok.map(row)}</div>
-    ${bad.length > 0 && ok.length > 0 && html`<div class="card-foot"><button class="btn sm ghost" onClick=${() => setShowOk(!showOk)}>${showOk ? 'Скрыть пройденные' : `В порядке ещё ${ok.length} ${C.plural(ok.length, 'проверка', 'проверки', 'проверок')}`}</button></div>`}
+    <div class="rows">${bad.map(row)}</div>
   </section>`;
 }
 
@@ -242,15 +241,18 @@ function ForecastCard({ d }) {
   </section>`;
 }
 
-function Attention({ d }) {
+function Attention({ d, i }) {
   const [all, setAll] = useState(false);
-  const list = all || d.debtors.length <= 8 ? d.debtors : d.debtors.slice(0, 6);
+  const list = all || d.debtors.length <= 6 ? d.debtors : d.debtors.slice(0, 5);
+  const total = C.r2(d.debtors.reduce((a, s) => a + d.student(s.id).dueNow, 0));
+  const late = d.debtors.filter((s) => d.student(s.id).status === 'overdue').length;
+  const copy = async () => toast((await copyText(summaryText(d, i))) ? 'Сводка скопирована — её можно вставить в заметки или отправить себе' : 'Не удалось скопировать');
   return html`<section class="card flush">
-    <div class="card-head"><div><h2>Кто должен</h2><div class="hint">сначала просроченные, потом ближайшие ${d.remindDays} ${C.plural(d.remindDays, 'день', 'дня', 'дней')}</div></div>
-      ${d.debtors.length > 0 && html`<div class="toolbar"><button class="btn sm" onClick=${() => open('remindAll', {})}><${Icon} name="bell" cls="s" />Напомнить всем</button><button class="btn sm ghost icon" aria-label="Скопировать список должников" title="Скопировать список должников текстом" onClick=${async () => toast((await copyText(debtorsText())) ? 'Список должников скопирован' : 'Не удалось скопировать')}><${Icon} name="copy" cls="s" /></button></div>`}</div>
+    <div class="card-head"><div><h2>Получить деньги${total > 0 ? html` · <span class="neg-t">${money(total)}</span>` : ''}</h2><div class="hint">${d.debtors.length ? `${d.debtors.length} ${C.plural(d.debtors.length, 'ученик', 'ученика', 'учеников')}${late ? `, просрочили ${late}` : ''} · срок подходит в ближайшие ${d.remindDays} ${C.plural(d.remindDays, 'день', 'дня', 'дней')}` : 'кто должен заплатить'}</div></div>
+      <div class="toolbar">${d.debtors.length > 0 && html`<button class="btn sm" onClick=${() => open('remindAll', {})}><${Icon} name="bell" cls="s" />Напомнить всем</button>`}<button class="btn sm ghost icon" aria-label="Скопировать сводку" title="Скопировать сводку на сегодня текстом: кто должен и кому выплатить" onClick=${copy}><${Icon} name="copy" cls="s" /></button></div></div>
     ${d.debtors.length ? html`<div class="rows">${list.map((s) => html`<${StudentRow} key=${s.id} s=${s} L=${d.student(s.id)} />`)}</div>`
       : html`<${Empty} icon="check" title=${d.activeStudents.length ? 'Все оплатили' : 'Учеников пока нет'}>${d.activeStudents.length ? `Напоминания появятся за ${d.remindDays} ${C.plural(d.remindDays, 'день', 'дня', 'дней')} до срока оплаты.` : 'Добавьте группу и учеников — здесь появится список тех, кому пора платить.'}<//>`}
-    ${d.debtors.length > 8 && html`<div class="card-foot"><button class="btn sm ghost" onClick=${() => setAll(!all)}>${all ? 'Свернуть' : `Показать всех · ${d.debtors.length}`}</button></div>`}
+    ${d.debtors.length > 6 && html`<div class="card-foot"><button class="btn sm ghost" onClick=${() => setAll(!all)}>${all ? 'Свернуть' : `Показать всех · ${d.debtors.length}`}</button></div>`}
   </section>`;
 }
 
@@ -261,8 +263,9 @@ function Payouts({ d }) {
     ...d.teachersDue.map((t) => { const L = d.teacher(t.id); return html`<div class="row tap srow" key=${t.id} ...${tap(() => open('teacher', { id: t.id }))}><${Avatar} name=${t.name} /><div class="row-main"><div class="row-title"><span>${t.name}</span></div><div class="row-sub"><${Pill} status=${L.status}><${DueLabel} due=${L.due[0].due} /><//> ${[...new Set(L.due.map((c) => c.label))].join(', ')}</div></div><span class="row-amount">${money(L.dueNow)}</span><div class="row-actions" onClick=${(e) => e.stopPropagation()}><button class="btn sm good" aria-label=${`Выплатить: ${t.name}`} onClick=${() => open('payout', { id: t.id })}><${Icon} name="cash" cls="s" /><span class="only-wide">Выплатить</span></button></div></div>`; }),
     ...d.recurringDue.map((r) => { const L = d.recurring(r.id), c = L.due[0]; return html`<div class="row tap srow" key=${r.id} ...${tap(() => open('recurringPay', { id: r.id, ym: c.ym }))}><${Avatar} icon="repeat" /><div class="row-main"><div class="row-title"><span>${r.name}</span></div><div class="row-sub"><${Pill} status=${L.status}><${DueLabel} due=${c.due} /><//> подписка · ${C.ymName(c.ym)}</div></div><span class="row-amount">${money(L.dueNow)}</span><div class="row-actions" onClick=${(e) => e.stopPropagation()}><button class="btn sm good" aria-label=${`Оплачено: ${r.name}`} onClick=${() => quickRecurring(r.id, c.ym)}><${Icon} name="check" cls="s" /><span class="only-wide">Оплачено</span></button></div></div>`; }),
   ];
+  const total = C.r2(d.teachersDue.reduce((a, t) => a + d.teacher(t.id).dueNow, 0) + d.recurringDue.reduce((a, r) => a + d.recurring(r.id).dueNow, 0));
   return html`<section class="card flush">
-    <div class="card-head"><div><h2>Выплатить и оплатить</h2><div class="hint">зарплаты и подписки</div></div></div>
+    <div class="card-head"><div><h2>Выплатить${total > 0 ? ` · ${money(total)}` : ''}</h2><div class="hint">зарплаты преподавателям и подписки — срок прошёл или скоро</div></div><button class="btn sm ghost" onClick=${() => { store.setUI({ payrollTab: 'due' }); go('teachers'); }}>Все зарплаты<${Icon} name="right" cls="s" /></button></div>
     ${rows.length ? html`<div class="rows">${rows}</div>` : html`<${Empty} icon="check">${d.activeTeachers.length || d.activeRecurring.length ? 'Сейчас платить никому не нужно.' : 'Добавьте преподавателей и подписки — напомним, когда придёт срок.'}<//>`}
     ${unset > 0 && html`<div class="card-foot" style="justify-content:flex-start"><button class="btn sm ghost wrap" onClick=${() => go('teachers')}><${Icon} name="info" cls="s" />У ${unset} ${C.plural(unset, 'преподавателя', 'преподавателей', 'преподавателей')} не задана оплата за группы</button></div>`}
   </section>`;
@@ -323,9 +326,6 @@ function Banners({ d }) {
     ${store.saveError && html`<div class="banner warn"><${Icon} name="alert" /><div class="grow"><b>Изменения не сохраняются</b><div class="small muted">В хранилище браузера закончилось место. Скачайте резервную копию, чтобы ничего не потерять.</div></div><button class="btn sm primary" onClick=${backupNow}><${Icon} name="download" cls="s" />Скачать копию</button></div>`}
     ${!store.persistent && html`<div class="banner warn"><${Icon} name="alert" /><div class="grow"><b>Браузер не сохраняет данные</b><div class="small muted">Похоже, включён приватный режим. Всё, что вы внесёте, пропадёт после закрытия вкладки.</div></div></div>`}
     ${st.meta.migratedFrom && !ui.dismissed.migrated && html`<div class="banner"><${Icon} name="check" /><div class="grow"><b>Данные из прежней версии перенесены</b><div class="small muted">${st.students.length} ${C.plural(st.students.length, 'ученик', 'ученика', 'учеников')} и ${st.payments.length} ${C.plural(st.payments.length, 'запись', 'записи', 'записей')} на месте. Долги теперь считаются по месяцам.</div></div><button class="btn sm" onClick=${() => dismiss('migrated')}>Понятно</button></div>`}
-    ${!ui.dismissed.news202611 && html`<div class="banner news"><${Icon} name="zap" /><div class="grow"><b>Что нового</b><div class="small muted">Касса и прогноз денег на 4 недели · напоминания всем должникам в один заход · проверки «где теряются деньги» · экономика каждой группы · зарплаты по месяцам и ставки в одном месте · перевод учеников между группами</div>
-      <div class="toolbar" style="margin-top:8px"><button class="btn sm" onClick=${() => openSheet(CashSheet, {})}><${Icon} name="wallet" cls="s" />Указать остаток в кассе</button>${d.debtors.length > 0 && html`<button class="btn sm" onClick=${() => open('remindAll', {})}><${Icon} name="bell" cls="s" />Напомнить всем</button>`}<button class="btn sm" onClick=${() => { store.setUI({ payrollTab: 'sheet' }); go('teachers'); }}><${Icon} name="table" cls="s" />Ведомость зарплат</button></div></div>
-      <button class="btn sm ghost" onClick=${() => dismiss('news202611')}>Понятно</button></div>`}
     ${needBackup && html`<div class="banner warn"><${Icon} name="database" /><div class="grow"><b>${days == null ? 'Сделайте резервную копию' : `Копия не обновлялась ${days} ${C.plural(days, 'день', 'дня', 'дней')}`}</b><div class="small muted">Данные хранятся только в этом браузере. Файл копии спасёт их при очистке браузера и перенесёт на другое устройство.</div></div><div class="toolbar"><button class="btn sm primary" onClick=${backupNow}><${Icon} name="download" cls="s" />Скачать</button><button class="btn sm ghost" onClick=${() => dismiss('backup', C.today())}>Позже</button></div></div>`}`;
 }
 
@@ -362,19 +362,22 @@ export function Home() {
   if (!hasData(st)) return html`<div class="stack"><${Recovered} /><${Onboarding} /></div>`;
   const on = (id) => (st.settings.home.find((w) => w.id === id) || { on: true }).on;
   const W = {
-    forecast: () => html`<${ForecastCard} d=${d} />`, tasks: () => html`<${Tasks} d=${d} i=${i} />`, attention: () => html`<${Attention} d=${d} />`, leaks: () => html`<${Leaks} d=${d} i=${i} />`, payouts: () => html`<${Payouts} d=${d} />`,
+    forecast: () => html`<${ForecastCard} d=${d} />`, tasks: () => html`<${Tasks} d=${d} i=${i} />`, attention: () => html`<${Attention} d=${d} i=${i} />`, leaks: () => html`<${Leaks} d=${d} i=${i} />`, payouts: () => html`<${Payouts} d=${d} />`,
     economy: () => html`<${EconomyCard} d=${d} i=${i} />`, cashflow: () => html`<${CashflowCard} d=${d} range=${range} onRange=${setRange} />`, upcoming: () => html`<${Upcoming} d=${d} />`, recent: () => html`<${Recent} d=${d} />`,
   };
-  const pick = (ids) => ids.filter((id) => on(id) && W[id]);
-  const pair = (a, b) => { const l = pick(a), r = pick(b); if (!l.length && !r.length) return null; return html`<div class=${cx('cols', (!l.length || !r.length) && 'even')}>${l.length > 0 && html`<div class="stack">${l.map((id) => html`<div key=${id}>${W[id]()}</div>`)}</div>`}${r.length > 0 && html`<div class="stack">${r.map((id) => html`<div key=${id}>${W[id]()}</div>`)}</div>`}</div>`; };
+  // Порядок блоков — как в настройках. Слева «Получить деньги», справа всё, что про выплаты и прогноз,
+  // остальные (если включены) — ниже на всю ширину.
+  const order = st.settings.home.filter((w) => w.on && W[w.id]).map((w) => w.id);
+  const left = order.filter((id) => id === 'attention');
+  const right = order.filter((id) => ['payouts', 'leaks', 'forecast'].includes(id));
+  const rest = order.filter((id) => !left.includes(id) && !right.includes(id));
+  const col = (ids) => html`<div class="stack">${ids.map((id) => html`<div key=${id}>${W[id]()}</div>`)}</div>`;
   return html`<div class="stack">
     <${Recovered} />
     ${sync.status === 'conflict' && html`<div class="banner warn"><${Icon} name="alert" /><div class="grow"><b>Данные в аккаунте и на этом устройстве различаются</b><div class="small muted">Пока вы не выберете, какие оставить, синхронизация приостановлена.</div></div><button class="btn sm primary" onClick=${() => open('syncConflict', {})}>Выбрать</button></div>`}
     <${Banners} d=${d} />
     ${on('kpi') && html`<${Hero} d=${d} i=${i} />`}
-    ${pair(['tasks', 'attention'], ['forecast', 'leaks', 'payouts'])}
-    ${on('economy') && html`<${EconomyCard} d=${d} i=${i} />`}
-    ${pair(['cashflow'], ['upcoming'])}
-    ${pair(['recent'], [])}
+    ${left.length + right.length > 0 && html`<div class="cols even">${left.length > 0 && col(left)}${right.length > 0 && col(right)}</div>`}
+    ${rest.map((id) => html`<div key=${id}>${W[id]()}</div>`)}
   </div>`;
 }

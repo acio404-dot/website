@@ -89,7 +89,7 @@ function App() {
   const toggleTheme = () => act.setSettings({ theme: dark ? 'light' : 'dark' });
   const projects = st.projects.length > 1 ? html`<select class="input sm" style="width:auto;max-width:170px" aria-label="Проект" value=${store.ui.project} onChange=${(e) => store.setUI({ project: e.target.value, studentsGroup: 'all' })}><option value="all">Все проекты</option>${st.projects.map((p) => html`<option value=${p.id} selected=${p.id === store.ui.project}>${p.name}</option>`)}</select>` : null;
   const more = (e) => openMenu(e, [
-    ...['groups', 'teachers', 'calendar', 'settings'].map((p) => ({ label: PAGES[p].title, icon: PAGES[p].icon, on: page === p, hint: p === 'teachers' && d.teachersDue.length ? String(d.teachersDue.length) : '', onClick: () => go(p) })),
+    ...['groups', 'finance', 'calendar', 'settings'].map((p) => ({ label: PAGES[p].title, icon: PAGES[p].icon, on: page === p, onClick: () => go(p) })),
     'sep',
     { label: sync.cfg ? `Аккаунт: ${sync.cfg.login}` : 'Войти в аккаунт', icon: 'cloud', hint: sync.cfg ? (sync.status === 'ok' ? '✓' : '!') : '', onClick: () => (sync.cfg ? go('settings') : open('signIn', {})) },
     { label: dark ? 'Светлая тема' : 'Тёмная тема', icon: dark ? 'sun' : 'moon', onClick: toggleTheme },
@@ -124,8 +124,8 @@ function App() {
       <a class=${cx('tab', page === 'home' && 'is-active')} href="#/"><${Icon} name="home" />Обзор</a>
       <a class=${cx('tab', page === 'students' && 'is-active')} href="#/students"><${Icon} name="users" />Ученики${overdue > 0 && html`<span class="nav-badge">${overdue}</span>`}</a>
       <button class="tab tab-add" aria-label="Новая запись" onClick=${() => openSheet(QuickAdd, {})}><span><${Icon} name="plus" cls="l" /></span></button>
-      <a class=${cx('tab', page === 'finance' && 'is-active')} href="#/finance"><${Icon} name="chart" />Финансы</a>
-      <button class=${cx('tab', ['groups', 'teachers', 'calendar', 'settings'].includes(page) && 'is-active')} onClick=${more}><${Icon} name="menu" />Ещё</button>
+      <a class=${cx('tab', page === 'teachers' && 'is-active')} href="#/teachers"><${Icon} name="cap" />Зарплаты${d.teachersDue.length > 0 && html`<span class="nav-badge soft">${d.teachersDue.length}</span>`}</a>
+      <button class=${cx('tab', ['groups', 'finance', 'calendar', 'settings'].includes(page) && 'is-active')} onClick=${more}><${Icon} name="menu" />Ещё</button>
     </nav>
     <${Overlays} />
   </div>`;
