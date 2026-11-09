@@ -3,7 +3,7 @@ import { html, useState } from './vendor.js';
 import { store, act, allCategories, hasData, HOME_WIDGETS, ACCENTS, DEFAULT_TEMPLATES, importAny } from './store.js';
 import * as C from './core.js';
 import { money, cx, Icon, Sheet, Seg, Switch, Pill, Fields, useForm, open, openSheet, confirmSheet, toast, download, toCSV, getDerived, sheets } from './ui.js';
-import { backupNow, importFile } from './home.js';
+import { backupNow, importFile, importText } from './home.js';
 import { demoState } from './demo.js';
 import { SHEET_TYPES, syncSource, resultText } from './sheets.js';
 import { AccountCard, sync } from './sync.js';
@@ -102,6 +102,7 @@ export function Settings() {
 
     <section class="card"><div class="card-head"><div><h2>Копии и данные</h2><div class="hint">${sync.cfg ? 'Данные хранятся в этом браузере и в вашем аккаунте' : 'Данные хранятся в этом браузере'} (${size} КБ). ${sync.cfg ? 'Копия в файле — запасной вариант на случай забытого пароля.' : 'На другом устройстве они появятся, если войти в аккаунт или загрузить туда файл копии.'}</div></div></div>
       <${Row} title="Резервная копия" hint=${days == null ? 'Ещё не скачивалась' : days === 0 ? 'Скачана сегодня' : `Скачана ${days} ${C.plural(days, 'день', 'дня', 'дней')} назад`}><button class="btn primary" onClick=${backupNow}><${Icon} name="download" cls="s" />Скачать</button><button class="btn" onClick=${importFile}><${Icon} name="upload" cls="s" />Загрузить</button><//>
+      <${Row} title="Вставить копию текстом" hint="Если данные скопированы со старой страницы или из сообщения"><button class="btn" onClick=${() => open('pasteBackup', {})}><${Icon} name="file" cls="s" />Вставить</button><//>
       <${Row} title="Напоминать о копии" hint="Плашка на обзоре, если копия давно не обновлялась"><select class="input" aria-label="Как часто напоминать о копии" value=${String(s.backupDays)} onChange=${(e) => set({ backupDays: Number(e.target.value) })}>${[[3, 'Каждые 3 дня'], [7, 'Раз в неделю'], [14, 'Раз в 2 недели'], [30, 'Раз в месяц'], [0, 'Не напоминать']].map(([k, l]) => html`<option value=${k} selected=${s.backupDays === k}>${l}</option>`)}</select><//>
       <${Row} title="Выгрузка в CSV" hint="Для Excel, Numbers и Google Таблиц. Журнал операций выгружается в разделе «Финансы»."><button class="btn" onClick=${exportStudents}><${Icon} name="download" cls="s" />Ученики</button><//>
       <div class="setrow" style="align-items:flex-start"><div><b>Автоснимки</b><div class="hint">Дашборд сам сохраняет состояние раз в день и перед опасными действиями. Хранятся последние ${Math.max(snaps.length, 8)}.</div>
@@ -114,6 +115,21 @@ export function Settings() {
     <section class="card"><div class="card-head"><h2>Подсказки</h2></div>
       <dl class="kv left"><dt><kbd>⌘K</kbd> или <kbd>/</kbd></dt><dd>поиск и быстрый ввод: «лиза 150» запишет оплату, «zoom 23» — расход</dd><dt><kbd>N</kbd></dt><dd>новая запись</dd><dt><kbd>⌘Z</kbd></dt><dd>отменить последнее действие</dd><dt>На телефоне</dt><dd>«Поделиться» → «На экран Домой» — дашборд откроется как приложение</dd></dl>
     </section>
+    <p class="hint" style="text-align:center">Версия дашборда: ${C.BUILD} · адрес: ${location.host}</p>
   </div>`;
 }
+function PasteBackup({ close }) {
+  const [text, setText] = useState('');
+  return html`<${Sheet} title="Вставить копию текстом" cls="narrow" onClose=${close} onSubmit=${() => {
+    if (!text.trim()) return toast('Вставьте текст копии');
+    try { importAny(JSON.parse(text.trim())); } // сначала проверяем: при ошибке окно с текстом остаётся открытым
+    catch (e) { return toast(e instanceof SyntaxError ? 'Это не копия данных: текст скопирован не целиком или не тот' : (e && e.message) || 'Копия не читается'); }
+    close(); setTimeout(() => importText(text), 0);
+  }} foot=${html`<button type="button" class="btn" onClick=${close}>Отмена</button><button type="submit" class="btn primary">Загрузить</button>`}>
+    <p class="hint" style="margin:0 0 10px">Вставьте сюда весь скопированный текст — он начинается с фигурной скобки «{». Перед заменой дашборд покажет, сколько в копии учеников и записей.</p>
+    <textarea class="input" id="paste-backup" rows="8" style="width:100%;font-family:ui-monospace,monospace;font-size:12px" placeholder="{&quot;v&quot;: …}" value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
+  <//>`;
+}
+
 sheets.rename = RenameSheet;
+sheets.pasteBackup = PasteBackup;

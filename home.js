@@ -12,19 +12,22 @@ const groupOf = (s) => S().groups.find((g) => g.id === s.groupId);
 
 export function backupNow() { download(`tryos-finance-${C.today()}.json`, store.exportJSON()); store.markBackup(); toast('Копия скачана — сохраните файл в надёжном месте'); }
 /** Загрузить копию из файла. Если в дашборде уже есть данные — сначала показываем, что на что меняется. */
-export function importFile() {
-  pickFile('application/json,.json', (text) => {
+export function importFile() { pickFile('application/json,.json', importText); }
+
+// Загрузка копии из текста: файл или текст, вставленный вручную (например, перенесённый со старой страницы).
+export function importText(text) {
+  {
     let next;
-    try { next = importAny(JSON.parse(text)); }
-    catch (e) { return toast(e instanceof SyntaxError ? 'Это не файл копии: его не удаётся прочитать' : (e && e.message) || 'Файл не читается'); }
+    try { next = importAny(JSON.parse(String(text).trim())); }
+    catch (e) { toast(e instanceof SyntaxError ? 'Это не копия данных: её не удаётся прочитать' : (e && e.message) || 'Копия не читается'); return false; }
     const count = (st) => `${st.students.length} ${C.plural(st.students.length, 'ученик', 'ученика', 'учеников')} и ${st.payments.length} ${C.plural(st.payments.length, 'запись', 'записи', 'записей')}`;
     const stamp = (st) => (st.meta.updatedAt ? `, изменения от ${new Date(st.meta.updatedAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}` : '');
     const apply = () => { next.meta.lastBackupAt = new Date().toISOString(); store.replace(next, `Копия загружена: ${count(next)}`, 'Перед загрузкой копии'); };
     const cur = store.state;
     if (!hasData(cur)) return apply();
     const older = !!cur.meta.updatedAt && !!next.meta.updatedAt && next.meta.updatedAt < cur.meta.updatedAt;
-    confirmSheet({ title: 'Заменить данные копией?', text: `Сейчас в дашборде: ${count(cur)}${stamp(cur)}. В файле: ${count(next)}${stamp(next)}.${older ? ' Файл старше текущих данных — более поздние изменения пропадут.' : ''} Перед заменой будет сделан автоснимок, а саму замену можно отменить.`, ok: 'Заменить', danger: older || !hasData(next), onOk: apply });
-  });
+    confirmSheet({ title: 'Заменить данные копией?', text: `Сейчас в дашборде: ${count(cur)}${stamp(cur)}. В копии: ${count(next)}${stamp(next)}.${older ? ' Копия старше текущих данных — более поздние изменения пропадут.' : ''} Перед заменой будет сделан автоснимок, а саму замену можно отменить.`, ok: 'Заменить', danger: older || !hasData(next), onOk: apply });
+  }
 }
 
 export function StudentRow({ s, L, compact, noAvatar }) {

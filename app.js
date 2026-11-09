@@ -104,9 +104,11 @@ function App() {
         <button class="nav-item" onClick=${() => (sync.cfg ? go('settings') : open('signIn', {}))} title=${sync.cfg ? `${sync.cfg.login}: ${syncLabel()}` : 'Войти в аккаунт, чтобы данные были во всех браузерах'}><${Icon} name="cloud" /><span>${sync.cfg ? sync.cfg.login : 'Войти в аккаунт'}</span>${sync.cfg && html`<span class=${cx('dot', sync.status === 'ok' ? 'ok' : sync.status === 'busy' ? 'today' : 'overdue')} style="margin-left:auto"></span>`}</button>
         <a class=${cx('nav-item', page === 'settings' && 'is-active')} href="#/settings" title="Настройки"><${Icon} name="settings" /><span>Настройки</span></a>
         <button class="nav-item" onClick=${toggleTheme} title=${dark ? 'Светлая тема' : 'Тёмная тема'}><${Icon} name=${dark ? 'sun' : 'moon'} /><span>${dark ? 'Светлая тема' : 'Тёмная тема'}</span></button>
+        <span class="build hide-narrow" title="Версия дашборда">версия ${C.BUILD}</span>
       </div>
     </aside>
     <div class="main">
+      ${newer && html`<div class="update-bar"><${Icon} name="refresh" cls="s" /><span>Вышла новая версия дашборда — обновите страницу, чтобы её увидеть.</span><button class="btn sm primary" onClick=${() => location.reload()}>Обновить</button></div>`}
       <header class="topbar">
         <div class="topbar-title"><h1>${P.title}</h1>${sub && html`<div class="sub">${sub}</div>`}</div>
         <div class="topbar-actions">
@@ -139,6 +141,18 @@ function Rescue({ error }) {
     <p class="hint">${String((error && error.message) || error)}</p></div>`;
 }
 
+// ---------- Проверка версии ----------
+// Если браузер (или иконка на экране «Домой») показывает старую копию сайта, предлагаем обновить страницу.
+let newer = null;
+async function checkVersion() {
+  try {
+    const r = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j && typeof j.v === 'string' && j.v > C.BUILD && newer !== j.v) { newer = j.v; store.rev++; store.emit(); }
+  } catch { /* нет связи — проверим позже */ }
+}
+
 let bootError = null;
 try { store.init(); } catch (e) { bootError = e; try { console.error(e); } catch { /* нет консоли */ } }
 applyLook();
@@ -154,6 +168,9 @@ else {
   // просим браузер не очищать данные сайта самостоятельно (поддерживается не везде; отказ не страшен)
   const keep = () => { try { if (hasData(store.state) && navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch { /* не поддерживается */ } };
   keep();
+  checkVersion();
+  setInterval(checkVersion, 5 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkVersion(); });
   let asked = hasData(store.state);
   store.subscribe(() => { if (!asked && hasData(store.state)) { asked = true; keep(); } });
 }
