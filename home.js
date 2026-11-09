@@ -2,7 +2,7 @@
 import { html, useState, useMemo } from './vendor.js';
 import { store, act, hasData, importAny } from './store.js';
 import * as C from './core.js';
-import { money, moneyBig, cx, Icon, Avatar, Pill, Empty, Seg, Meter, Spark, CashChart, DueLabel, getDerived, open, go, dueText, studentInfo, toast, copyText, download, pickFile, openMenu, tap, confirmSheet } from './ui.js';
+import { money, moneyBig, cx, Icon, Avatar, Pill, Empty, Seg, Meter, Spark, CashChart, DueLabel, getDerived, open, go, dueText, studentInfo, toast, copyText, download, pickFile, openMenu, tap, confirmSheet, Sheet, openSheet } from './ui.js';
 import { quickPay, quickRecurring, debtorsText } from './quick.js';
 import { demoState } from './demo.js';
 import { sync } from './sync.js';
@@ -111,7 +111,7 @@ function Tasks({ d, i }) {
     { key: 'collect', icon: 'in', tone: now.some((s) => d.student(s.id).status === 'overdue') ? 'bad' : 'warn', show: now.length > 0, title: `Получить оплату от ${now.length} ${C.plural(now.length, 'ученика', 'учеников', 'учеников')}`, sub: 'срок сегодня или уже прошёл', amount: nowSum,
       list: () => now.map((s) => html`<${StudentRow} key=${s.id} s=${s} L=${d.student(s.id)} />`) },
     { key: 'remind', icon: 'bell', tone: 'warn', show: i.remindAgain.length > 0, title: `Напомнить ${i.remindAgain.length} ${C.plural(i.remindAgain.length, 'должнику', 'должникам', 'должникам')}`, sub: 'не напоминали 5 дней и больше', amount: C.r2(i.remindAgain.reduce((a, x) => a + x.amount, 0)),
-      list: () => i.remindAgain.map((x) => html`<div class="row" key=${x.s.id}><div class="row-main"><div class="row-title"><span>${x.s.name}</span></div><div class="row-sub">${x.days ? `просрочено ${x.days} дн.` : 'закончился абонемент'} · ${x.since == null ? 'ещё не напоминали' : `напоминали ${x.since} дн. назад`}</div></div><span class="row-amount">${money(x.amount)}</span><div class="row-actions"><button class="btn sm" onClick=${() => open('remind', { id: x.s.id })}><${Icon} name="bell" cls="s" /><span class="only-wide">Напомнить</span></button></div></div>`) },
+      list: () => [html`<div class="row" key="all"><div class="row-main"><span class="small muted">Всем сразу — с готовым текстом каждому</span></div><button class="btn sm primary" onClick=${() => open('remindAll', {})}><${Icon} name="bell" cls="s" />Напомнить всем</button></div>`, ...i.remindAgain.map((x) => html`<div class="row" key=${x.s.id}><div class="row-main"><div class="row-title"><span>${x.s.name}</span></div><div class="row-sub">${x.days ? `просрочено ${x.days} дн.` : 'закончился абонемент'} · ${x.since == null ? 'ещё не напоминали' : `напоминали ${x.since} дн. назад`}</div></div><span class="row-amount">${money(x.amount)}</span><div class="row-actions"><button class="btn sm" onClick=${() => open('remind', { id: x.s.id })}><${Icon} name="bell" cls="s" /><span class="only-wide">Напомнить</span></button></div></div>`)] },
     { key: 'pay', icon: 'cash', tone: teachersNow.some((t) => d.teacher(t.id).status === 'overdue') ? 'bad' : 'warn', show: teachersNow.length > 0, title: `Выплатить ${teachersNow.length} ${C.plural(teachersNow.length, 'преподавателю', 'преподавателям', 'преподавателям')}`, sub: 'срок сегодня или уже прошёл', amount: tSum,
       list: () => teachersNow.map((t) => { const L = d.teacher(t.id); return html`<div class="row" key=${t.id}><div class="row-main"><div class="row-title"><span>${t.name}</span></div><div class="row-sub">${[...new Set(L.due.map((c) => c.label))].join(', ')} · ${dueText(L.due[0].due)}</div></div><span class="row-amount">${money(L.dueNow)}</span><div class="row-actions"><button class="btn sm good" onClick=${() => open('payout', { id: t.id })}><${Icon} name="cash" cls="s" /><span class="only-wide">Выплатить</span></button></div></div>`; }) },
     { key: 'subs', icon: 'repeat', tone: 'warn', show: recNow.length > 0, title: `Оплатить ${recNow.length} ${C.plural(recNow.length, 'подписку', 'подписки', 'подписок')}`, sub: recNow.map((r) => r.name).join(', '), amount: C.r2(recNow.reduce((a, r) => a + d.recurring(r.id).dueNow, 0)),
@@ -198,12 +198,53 @@ export function EconomyCard({ d, i }) {
   </section>`;
 }
 
+// ---------- Касса и прогноз ----------
+function CashSheet({ close }) {
+  const cur = S().settings.cash;
+  const bal = C.cashBalance(S(), cur);
+  const [v, setV] = useState({ amount: bal ? String(bal.amount) : '', at: C.today() });
+  const n = C.parseAmount(v.amount);
+  const ok = String(v.amount).trim() !== '' && n != null;
+  const save = () => { if (!ok) return; close(); act.setSettings({ cash: { amount: n, at: v.at, ts: Date.now() } }, `Остаток в кассе: ${money(n)}`); };
+  return html`<${Sheet} title="Сколько денег сейчас" cls="narrow" onClose=${close} onSubmit=${save}
+    foot=${html`${cur && html`<div class="left"><button type="button" class="btn ghost" onClick=${() => { close(); act.setSettings({ cash: null }, 'Остаток в кассе больше не считается'); }}>Не считать</button></div>`}<button type="button" class="btn" onClick=${close}>Отмена</button><button type="submit" class="btn primary" disabled=${!ok}>Сохранить</button>`}>
+    <div class="stack" style="gap:14px">
+      <div class="field"><label for="cash-amt">Наличные и на счёте вместе</label><input id="cash-amt" class="input big" inputmode="decimal" autocomplete="off" value=${v.amount} onInput=${(e) => setV({ ...v, amount: e.target.value })} placeholder="0" /></div>
+      <div class="field"><label for="cash-at">На дату</label><input id="cash-at" class="input" type="date" value=${v.at} onInput=${(e) => C.isSaneDate(e.target.value) && setV({ ...v, at: e.target.value })} /></div>
+      <p class="hint">Укажите один раз — дальше остаток меняется сам по каждой записанной оплате, выплате и расходу. Если цифра разойдётся с реальной, просто впишите новую.</p>
+    </div>
+  <//>`;
+}
+const wkLabel = (w) => { const a = C.parseISO(w.from), b = C.parseISO(w.to); return a.getMonth() === b.getMonth() ? `${a.getDate()}–${b.getDate()} ${C.MONTHS_SHORT[b.getMonth()]}` : `${C.fmtDate(w.from)} – ${C.fmtDate(w.to)}`; };
+function ForecastCard({ d }) {
+  const st = S();
+  const [openW, setOpenW] = useState(-1);
+  const bal = C.cashBalance(st, st.settings.cash);
+  const f = useMemo(() => C.forecast(st, d, 28, bal ? bal.amount : null), [d]);
+  const max = Math.max(1, ...f.weeks.map((w) => Math.max(w.in, w.out)));
+  return html`<section class="card flush">
+    <div class="card-head"><div><h2>Деньги на 4 недели</h2><div class="hint">что придёт и уйдёт по графику</div></div>
+      <button class=${cx('cashpill', bal && bal.amount < 0 && 'neg')} onClick=${() => openSheet(CashSheet, {})} title="Остаток в кассе">${bal ? html`<span class="xs muted">в кассе</span><b>${money(bal.amount)}</b>` : html`<${Icon} name="wallet" cls="s" />Указать остаток`}</button></div>
+    ${f.gap && html`<div class="fc-alert"><${Icon} name="alert" /><div><b>К ${C.fmtDate(f.gap.week.to)} может не хватить ${money(f.gap.amount)}</b><div class="small">Соберите долги${f.lateIn > 0 ? ` (${money(f.lateIn)})` : ''} или договоритесь о переносе выплат.</div></div></div>`}
+    <div class="rows">${f.weeks.map((w, k) => html`<div key=${w.from}>
+      <button class=${cx('fcw', openW === k && 'is-open')} onClick=${() => setOpenW(openW === k ? -1 : k)} aria-expanded=${openW === k}>
+        <span class="fcw-d">${k === 0 ? 'Эта неделя' : wkLabel(w)}${k === 0 ? html`<small>${wkLabel(w)}</small>` : null}</span>
+        <span class="fcw-bars"><i class="in" style=${`width:${(w.in / max) * 100}%`}></i><i class="out" style=${`width:${(w.out / max) * 100}%`}></i></span>
+        <span class="fcw-n"><span class="ok-t">+${money(w.in)}</span><span class="neg-t">−${money(w.out)}</span></span>
+        ${w.balance != null && html`<span class=${cx('fcw-b', w.balance < 0 && 'neg-t')}>${money(w.balance)}</span>`}
+      </button>
+      ${openW === k && html`<div class="task-list rows">${w.items.length ? w.items.map((e) => html`<div class="row tap" key=${e.kind + e.id + e.date} ...${tap(() => (e.kind === 'student' ? open('student', { id: e.id }) : e.kind === 'teacher' ? open('teacher', { id: e.id }) : open('recurringPay', { id: e.id, ym: e.period })))}><span class=${cx('dot', e.dir)}></span><div class="row-main"><div class="row-title"><span>${e.name}</span></div><div class="row-sub">${e.late ? 'просрочено · ' : ''}${C.fmtDate(e.date)} · ${e.sub}</div></div><span class=${cx('row-amount', e.dir === 'in' && 'in')}>${e.dir === 'in' ? '+' : '−'}${money(e.amount)}</span></div>`) : html`<div class="row"><span class="hint">Платежей по графику нет.</span></div>`}</div>`}
+    </div>`)}</div>
+    <div class="card-foot" style="justify-content:space-between;flex-wrap:wrap;gap:6px"><span class="small">за 4 недели: <b class="ok-t">+${money(f.in)}</b> · <b class="neg-t">−${money(f.out)}</b>${f.end != null ? html` · останется <b class=${f.end < 0 ? 'neg-t' : ''}>${money(f.end)}</b>` : ''}</span>${f.lateIn > 0 && html`<span class="hint">+ ещё ${money(f.lateIn)} просроченных долгов (${f.lateInN}) — в прогноз не включены</span>`}</div>
+  </section>`;
+}
+
 function Attention({ d }) {
   const [all, setAll] = useState(false);
   const list = all || d.debtors.length <= 8 ? d.debtors : d.debtors.slice(0, 6);
   return html`<section class="card flush">
     <div class="card-head"><div><h2>Кто должен</h2><div class="hint">сначала просроченные, потом ближайшие ${d.remindDays} ${C.plural(d.remindDays, 'день', 'дня', 'дней')}</div></div>
-      ${d.debtors.length > 0 && html`<button class="btn sm ghost" aria-label="Скопировать список должников" title="Скопировать список должников текстом" onClick=${async () => toast((await copyText(debtorsText())) ? 'Список должников скопирован' : 'Не удалось скопировать')}><${Icon} name="copy" cls="s" /><span class="only-wide">Список</span></button>`}</div>
+      ${d.debtors.length > 0 && html`<div class="toolbar"><button class="btn sm" onClick=${() => open('remindAll', {})}><${Icon} name="bell" cls="s" />Напомнить всем</button><button class="btn sm ghost icon" aria-label="Скопировать список должников" title="Скопировать список должников текстом" onClick=${async () => toast((await copyText(debtorsText())) ? 'Список должников скопирован' : 'Не удалось скопировать')}><${Icon} name="copy" cls="s" /></button></div>`}</div>
     ${d.debtors.length ? html`<div class="rows">${list.map((s) => html`<${StudentRow} key=${s.id} s=${s} L=${d.student(s.id)} />`)}</div>`
       : html`<${Empty} icon="check" title=${d.activeStudents.length ? 'Все оплатили' : 'Учеников пока нет'}>${d.activeStudents.length ? `Напоминания появятся за ${d.remindDays} ${C.plural(d.remindDays, 'день', 'дня', 'дней')} до срока оплаты.` : 'Добавьте группу и учеников — здесь появится список тех, кому пора платить.'}<//>`}
     ${d.debtors.length > 8 && html`<div class="card-foot"><button class="btn sm ghost" onClick=${() => setAll(!all)}>${all ? 'Свернуть' : `Показать всех · ${d.debtors.length}`}</button></div>`}
@@ -279,6 +320,9 @@ function Banners({ d }) {
     ${store.saveError && html`<div class="banner warn"><${Icon} name="alert" /><div class="grow"><b>Изменения не сохраняются</b><div class="small muted">В хранилище браузера закончилось место. Скачайте резервную копию, чтобы ничего не потерять.</div></div><button class="btn sm primary" onClick=${backupNow}><${Icon} name="download" cls="s" />Скачать копию</button></div>`}
     ${!store.persistent && html`<div class="banner warn"><${Icon} name="alert" /><div class="grow"><b>Браузер не сохраняет данные</b><div class="small muted">Похоже, включён приватный режим. Всё, что вы внесёте, пропадёт после закрытия вкладки.</div></div></div>`}
     ${st.meta.migratedFrom && !ui.dismissed.migrated && html`<div class="banner"><${Icon} name="check" /><div class="grow"><b>Данные из прежней версии перенесены</b><div class="small muted">${st.students.length} ${C.plural(st.students.length, 'ученик', 'ученика', 'учеников')} и ${st.payments.length} ${C.plural(st.payments.length, 'запись', 'записи', 'записей')} на месте. Долги теперь считаются по месяцам.</div></div><button class="btn sm" onClick=${() => dismiss('migrated')}>Понятно</button></div>`}
+    ${!ui.dismissed.news202611 && html`<div class="banner news"><${Icon} name="zap" /><div class="grow"><b>Что нового</b><div class="small muted">Касса и прогноз денег на 4 недели · напоминания всем должникам в один заход · проверки «где теряются деньги» · экономика каждой группы · зарплаты по месяцам и ставки в одном месте · перевод учеников между группами</div>
+      <div class="toolbar" style="margin-top:8px"><button class="btn sm" onClick=${() => openSheet(CashSheet, {})}><${Icon} name="wallet" cls="s" />Указать остаток в кассе</button>${d.debtors.length > 0 && html`<button class="btn sm" onClick=${() => open('remindAll', {})}><${Icon} name="bell" cls="s" />Напомнить всем</button>`}<button class="btn sm" onClick=${() => { store.setUI({ payrollTab: 'sheet' }); go('teachers'); }}><${Icon} name="table" cls="s" />Ведомость зарплат</button></div></div>
+      <button class="btn sm ghost" onClick=${() => dismiss('news202611')}>Понятно</button></div>`}
     ${needBackup && html`<div class="banner warn"><${Icon} name="database" /><div class="grow"><b>${days == null ? 'Сделайте резервную копию' : `Копия не обновлялась ${days} ${C.plural(days, 'день', 'дня', 'дней')}`}</b><div class="small muted">Данные хранятся только в этом браузере. Файл копии спасёт их при очистке браузера и перенесёт на другое устройство.</div></div><div class="toolbar"><button class="btn sm primary" onClick=${backupNow}><${Icon} name="download" cls="s" />Скачать</button><button class="btn sm ghost" onClick=${() => dismiss('backup', C.today())}>Позже</button></div></div>`}`;
 }
 
@@ -315,7 +359,7 @@ export function Home() {
   if (!hasData(st)) return html`<div class="stack"><${Recovered} /><${Onboarding} /></div>`;
   const on = (id) => (st.settings.home.find((w) => w.id === id) || { on: true }).on;
   const W = {
-    tasks: () => html`<${Tasks} d=${d} i=${i} />`, attention: () => html`<${Attention} d=${d} />`, leaks: () => html`<${Leaks} d=${d} i=${i} />`, payouts: () => html`<${Payouts} d=${d} />`,
+    forecast: () => html`<${ForecastCard} d=${d} />`, tasks: () => html`<${Tasks} d=${d} i=${i} />`, attention: () => html`<${Attention} d=${d} />`, leaks: () => html`<${Leaks} d=${d} i=${i} />`, payouts: () => html`<${Payouts} d=${d} />`,
     economy: () => html`<${EconomyCard} d=${d} i=${i} />`, cashflow: () => html`<${CashflowCard} d=${d} range=${range} onRange=${setRange} />`, upcoming: () => html`<${Upcoming} d=${d} />`, recent: () => html`<${Recent} d=${d} />`,
   };
   const pick = (ids) => ids.filter((id) => on(id) && W[id]);
@@ -325,7 +369,7 @@ export function Home() {
     ${sync.status === 'conflict' && html`<div class="banner warn"><${Icon} name="alert" /><div class="grow"><b>Данные в аккаунте и на этом устройстве различаются</b><div class="small muted">Пока вы не выберете, какие оставить, синхронизация приостановлена.</div></div><button class="btn sm primary" onClick=${() => open('syncConflict', {})}>Выбрать</button></div>`}
     <${Banners} d=${d} />
     ${on('kpi') && html`<${Hero} d=${d} i=${i} />`}
-    ${pair(['tasks', 'attention'], ['leaks', 'payouts'])}
+    ${pair(['tasks', 'attention'], ['forecast', 'leaks', 'payouts'])}
     ${on('economy') && html`<${EconomyCard} d=${d} i=${i} />`}
     ${pair(['cashflow'], ['upcoming'])}
     ${pair(['recent'], [])}

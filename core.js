@@ -701,3 +701,43 @@ export function insights(state, d) {
     longDebtSum: r2(longDebt.reduce((a, x) => a + x.amount, 0)),
   };
 }
+
+// ---------- Касса и прогноз ----------
+/** Остаток в кассе: заданная сумма на дату плюс все поступления и минус все расходы, записанные после неё. */
+export function cashBalance(state, cash) {
+  if (!cash || !isISO(cash.at)) return null;
+  let bal = Number(cash.amount) || 0, n = 0;
+  for (const p of state.payments) {
+    const after = p.date > cash.at || (p.date === cash.at && (p.createdAt || 0) > (cash.ts || 0));
+    if (!after) continue;
+    bal += isIn(p) ? Number(p.amount) || 0 : -(Number(p.amount) || 0); n++;
+  }
+  return { amount: r2(bal), since: cash.at, count: n };
+}
+/** Прогноз на days дней по неделям: что должно прийти от учеников и уйти на зарплаты и подписки.
+    Просроченные долги учеников в приход не включаются (их могут не заплатить), просроченные выплаты — включаются в первую неделю. */
+export function forecast(state, d, days = 28, start = null) {
+  const t = d.today, to = addDays(t, days - 1);
+  const ev = eventsBetween(state, d, addDays(t, -400), to);
+  const weeks = [];
+  for (let i = 0; i < Math.ceil(days / 7); i++) weeks.push({ from: addDays(t, i * 7), to: addDays(t, Math.min(days, i * 7 + 7) - 1), in: 0, out: 0, items: [] });
+  let lateIn = 0, lateInN = 0;
+  for (const e of ev) {
+    if (e.status === 'paid' || !(e.amount > 0)) continue;
+    if (e.date < t) {
+      if (e.dir === 'in') { lateIn = r2(lateIn + e.amount); lateInN++; continue; }
+      weeks[0].out = r2(weeks[0].out + e.amount); weeks[0].items.push({ ...e, late: true }); continue;
+    }
+    const w = weeks[Math.floor(diffDays(e.date, t) / 7)];
+    if (!w) continue;
+    if (e.dir === 'in') w.in = r2(w.in + e.amount); else w.out = r2(w.out + e.amount);
+    w.items.push(e);
+  }
+  let bal = start == null ? null : Number(start) || 0, gap = null;
+  for (const w of weeks) {
+    w.net = r2(w.in - w.out);
+    if (bal != null) { bal = r2(bal + w.net); w.balance = bal; if (bal < 0 && !gap) gap = { week: w, amount: -bal }; }
+  }
+  const sum = (k) => r2(weeks.reduce((a, w) => a + w[k], 0));
+  return { weeks, in: sum('in'), out: sum('out'), net: r2(sum('in') - sum('out')), lateIn, lateInN, start, end: bal, gap };
+}

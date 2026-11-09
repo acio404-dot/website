@@ -18,7 +18,7 @@ export const DEFAULT_TEMPLATES = {
   overdue: 'Здравствуйте, {имя}! По нашим записям оплата за {месяц} ({сумма}) ещё не поступила, срок был {срок}. Подскажите, пожалуйста, когда получится оплатить?',
 };
 export const HOME_WIDGETS = [
-  ['kpi', 'Главные цифры'], ['tasks', 'Сделать сегодня'], ['attention', 'Кто должен'], ['leaks', 'Где теряются деньги'], ['payouts', 'Выплатить и оплатить'],
+  ['kpi', 'Главные цифры'], ['tasks', 'Сделать сегодня'], ['forecast', 'Деньги на 4 недели'], ['attention', 'Кто должен'], ['leaks', 'Где теряются деньги'], ['payouts', 'Выплатить и оплатить'],
   ['economy', 'Экономика групп'], ['cashflow', 'График доходов и расходов'], ['upcoming', 'Ближайшие 7 дней'], ['recent', 'Последние операции'],
 ];
 export const ACCENTS = ['blue', 'violet', 'green', 'orange', 'pink', 'graphite'];
@@ -82,6 +82,8 @@ export function normalize(raw) {
     messenger: ['whatsapp', 'telegram'].includes(S0.messenger) ? S0.messenger : 'whatsapp', home,
     backupDays: S0.backupDays == null ? D.backupDays : Math.max(0, Math.min(365, Math.round(num(S0.backupDays)))),
     sheets: (Array.isArray(S0.sheets) ? S0.sheets : []).filter((x) => x && typeof x === 'object' && !Array.isArray(x)).map(normSheet),
+    // остаток в кассе на дату: дальше он меняется сам по записанным оплатам и расходам
+    cash: S0.cash && typeof S0.cash === 'object' && isISO(S0.cash.at) ? { amount: r2(num(S0.cash.amount)), at: S0.cash.at, ts: Math.max(0, num(S0.cash.ts)) } : null,
   };
   const arr = (k) => (Array.isArray(st[k]) ? st[k].filter((x) => x && typeof x === 'object' && !Array.isArray(x)) : []);
   const cur = ymOf(today());

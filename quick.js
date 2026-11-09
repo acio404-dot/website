@@ -221,6 +221,42 @@ function RemindSheetI({ id, close }) {
     </div>
   <//>`;
 }
+/** Напомнить всем должникам по очереди: у каждого готовый текст и кнопки мессенджеров, отправленные отмечаются. */
+function RemindAllI({ close, only }) {
+  const d = getDerived();
+  const [done, setDone] = useState({});
+  const [openId, setOpenId] = useState('');
+  const list = useMemo(() => d.debtors.filter((s) => (only === 'overdue' ? d.student(s.id).status === 'overdue' : true)), []);
+  const st = S();
+  const preferTg = st.settings.messenger === 'telegram';
+  const mark = (s, url) => { if (url) window.open(url, '_blank', 'noopener'); if (!done[s.id]) act.remindStudent(s.id, `Напомнили: ${s.name}`); setDone({ ...done, [s.id]: true }); };
+  const n = Object.keys(done).length;
+  return html`<${Sheet} title="Напомнить должникам" onClose=${close}
+    foot=${html`<span class="small muted left">${n ? `Напомнили ${n} из ${list.length}` : `${list.length} ${C.plural(list.length, 'человек', 'человека', 'человек')} в списке`}</span><button class="btn primary" onClick=${close}>Готово</button>`}>
+    <div class="stack" style="gap:12px">
+      <div class="hint">Нажмите на мессенджер — откроется чат с готовым текстом, а ученик отметится как «напомнили». Текст можно раскрыть и поправить. Шаблоны — в «Настройках».</div>
+      <div class="card flush"><div class="rows">${list.map((s) => {
+        const L = d.student(s.id), text = reminderText(s, L), enc = encodeURIComponent(text), phone = digits(s.phone), tg = s.telegram;
+        const wa = phone && `https://wa.me/${phone}?text=${enc}`;
+        const tgu = (tg || phone) && (tg ? `https://t.me/${encodeURIComponent(tg)}?text=${enc}` : `https://t.me/+${phone}?text=${enc}`);
+        const ok = done[s.id];
+        return html`<div key=${s.id} class=${cx('rem', ok && 'is-done')}>
+          <div class="row">
+            <span class=${cx('task-ic', ok ? 'good' : L.status === 'overdue' ? 'bad' : 'warn')}><${Icon} name=${ok ? 'check' : 'bell'} /></span>
+            <div class="row-main"><div class="row-title"><span>${s.name}</span></div><div class="row-sub">${money(L.dueNow)} · ${L.due[0] ? dueText(L.due[0].due) : 'абонемент'}${s.remindedAt && !ok ? ` · напоминали ${C.fmtDate(s.remindedAt)}` : ''}${ok ? ' · напомнили сейчас' : ''}</div></div>
+            <div class="row-actions">
+              <button class="btn sm ghost icon" title="Показать текст" aria-label="Показать текст" onClick=${() => setOpenId(openId === s.id ? '' : s.id)}><${Icon} name="message" /></button>
+              ${(preferTg ? [tgu && ['Telegram', 'send', tgu], wa && ['WhatsApp', 'message', wa]] : [wa && ['WhatsApp', 'message', wa], tgu && ['Telegram', 'send', tgu]]).filter(Boolean).slice(0, 1).map(([label, icon, url]) => html`<button class=${cx('btn sm', ok ? 'soft' : 'good')} onClick=${() => { if (label === 'Telegram') copyText(text); mark(s, url); }}><${Icon} name=${icon} cls="s" /><span class="only-wide">${label}</span></button>`)}
+              ${!wa && !tgu && html`<button class=${cx('btn sm', ok ? 'soft' : 'good')} onClick=${async () => { if (await copyText(text)) { toast('Текст скопирован'); mark(s, null); } }}><${Icon} name="copy" cls="s" /><span class="only-wide">Копировать</span></button>`}
+            </div>
+          </div>
+          ${openId === s.id && html`<div class="rem-text"><div class="small">${text}</div><div class="toolbar" style="margin-top:8px">${wa && html`<button class="btn sm" onClick=${() => mark(s, wa)}><${Icon} name="message" cls="s" />WhatsApp</button>`}${tgu && html`<button class="btn sm" onClick=${() => { copyText(text); mark(s, tgu); }}><${Icon} name="send" cls="s" />Telegram</button>`}<button class="btn sm" onClick=${async () => { if (await copyText(text)) { toast('Текст скопирован'); mark(s, null); } }}><${Icon} name="copy" cls="s" />Скопировать</button><button class="btn sm ghost" onClick=${() => open('remind', { id: s.id })}><${Icon} name="edit" cls="s" />Изменить текст</button></div></div>`}
+        </div>`;
+      })}</div></div>
+      ${!list.length && html`<div class="hint">Должников нет — напоминать некому.</div>`}
+    </div>
+  <//>`;
+}
 export function debtorsText() {
   const d = getDerived();
   const lines = d.debtors.map((s) => { const L = d.student(s.id), i = studentInfo(s, L); return `• ${s.name}${groupOf(s) ? ` (${groupOf(s).name})` : ''} — ${money(i.amount)} ${i.main}, ${i.when}`; });
@@ -286,5 +322,5 @@ export function Palette({ close, text: t0 }) {
 }
 
 export const PaySheet = guard('students', PaySheetI), PayoutSheet = guard('teachers', PayoutSheetI), RecurringPaySheet = guard('recurring', RecurringPaySheetI), PaymentSheet = guard('payments', PaymentSheetI), RemindSheet = guard('students', RemindSheetI);
-sheets.pay = PaySheet; sheets.payout = PayoutSheet; sheets.recurringPay = RecurringPaySheet; sheets.quickAdd = QuickAdd; sheets.payment = PaymentSheet; sheets.remind = RemindSheet; sheets.palette = Palette;
+sheets.remindAll = RemindAllI; sheets.pay = PaySheet; sheets.payout = PayoutSheet; sheets.recurringPay = RecurringPaySheet; sheets.quickAdd = QuickAdd; sheets.payment = PaymentSheet; sheets.remind = RemindSheet; sheets.palette = Palette;
 export { closeSheet };
