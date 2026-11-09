@@ -1,4 +1,4 @@
-/* home.js — «Обзор»: главные цифры, кто должен, кому выплатить, график, сбор по группам, ближайшие дни. */
+/* home.js — «Обзор»: кто и сколько должен, что сделать сегодня, где теряются деньги, экономика групп, график, ближайшие дни. */
 import { html, useState, useMemo } from './vendor.js';
 import { store, act, hasData, importAny } from './store.js';
 import * as C from './core.js';
@@ -44,31 +44,165 @@ export function StudentRow({ s, L, compact, noAvatar }) {
   </div>`;
 }
 
-function Kpis({ d }) {
-  const k = d.kpi, soon = C.r2(k.toCollect - k.overdue), n = d.debtors.length;
-  const mon = C.ymShort(d.ym);
-  const hist = C.ymRange(C.ymAdd(d.ym, -5), d.ym).map((ym) => d.month(ym));
-  return html`<div class="kpis">
-    <button class="kpi hero" onClick=${() => { store.setUI({ studentsFilter: 'due', studentsView: 'list' }); go('students'); }}>
-      <span class="kpi-label">Ждём оплату сейчас</span>
-      <span class="kpi-value">${money(k.toCollect)}</span>
-      ${k.toCollect > 0 ? html`<span class="split" aria-hidden="true">${k.overdue > 0 && html`<i class="o" style=${`flex:${k.overdue}`}></i>`}${soon > 0 && html`<i class="s" style=${`flex:${soon}`}></i>`}</span>
-        <span class="kpi-sub">${k.overdue > 0 && html`<span><span class="dot overdue"></span> просрочено ${money(k.overdue)} · ${k.overdueCount}</span>`}${soon > 0 && html`<span><span class="dot soon"></span> на подходе ${money(soon)}</span>`}</span>`
-        : html`<span class="kpi-sub">${d.activeStudents.length ? 'Все оплатили — долгов нет' : 'Добавьте учеников, чтобы видеть оплаты'}</span>`}
-      ${n > 0 && html`<span class="kpi-sub">${n} ${C.plural(n, 'ученик', 'ученика', 'учеников')}</span>`}
+// ---------- Главные цифры ----------
+function Hero({ d, i }) {
+  const k = d.kpi, soon = C.r2(k.toCollect - k.overdue);
+  const eco = i.economy;
+  const subs = C.r2(d.activeRecurring.reduce((a, r) => a + (Number(r.amount) || 0), 0));
+  const other = C.r2(d.payments.filter((p) => C.ymOf(p.date) === d.ym && p.kind === 'expense' && !p.recurringId).reduce((a, p) => a + p.amount, 0));
+  const forecast = C.r2(eco.income - eco.cost - eco.salaries - subs - other);
+  const pct = eco.income > 0 ? Math.min(100, Math.round((eco.collected / eco.income) * 100)) : 0;
+  const payNow = C.r2(d.teachersDue.reduce((a, t) => a + d.teacher(t.id).dueNow, 0));
+  const payLate = C.r2(d.teachersDue.reduce((a, t) => a + d.teacher(t.id).debt, 0));
+  const recNow = C.r2(d.recurringDue.reduce((a, r) => a + d.recurring(r.id).dueNow, 0));
+  const goDebtors = () => { store.setUI({ studentsFilter: 'due', studentsView: 'list', studentsSort: 'amount' }); go('students'); };
+  return html`<div class="hero-grid">
+    <button class=${cx('hero', i.owed > 0 ? 'warn' : 'calm')} onClick=${goDebtors}>
+      <span class="hero-label"><${Icon} name=${i.owed > 0 ? 'alert' : 'check'} cls="s" />${i.owed > 0 ? 'Вам должны' : 'Просроченных долгов нет'}</span>
+      <span class="hero-value">${money(i.owed)}</span>
+      <span class="hero-sub">${i.debtors.length ? `${i.debtors.length} ${C.plural(i.debtors.length, 'ученик', 'ученика', 'учеников')} просрочили оплату` : 'все платят вовремя'}${soon > 0 ? ` · ещё ${money(soon)} — срок в ближайшие ${d.remindDays} ${C.plural(d.remindDays, 'день', 'дня', 'дней')}` : ''}</span>
+      ${i.owed > 0 && html`<span class="aging">${i.aging.map((b) => html`<span class=${cx('ag', b.key, !(b.amount > 0) && 'zero')} key=${b.key}><b>${money(b.amount)}</b><small>${b.label}</small></span>`)}</span>`}
     </button>
-    <div class="sec-title only-narrow" style="grid-column:1/-1;margin:6px 2px -2px">${C.ymLong(d.ym)}</div>
-    <div class="kpi" title=${`Получено в ${C.ymPrep(d.ym)}: ${money(k.cur.income)}`}><span class="kpi-label">Получено<span class="only-wide"> · ${mon}</span></span><span class="kpi-value">${moneyBig(k.cur.income)}</span><span class="kpi-sub">${k.expectedRest > 0 ? `ждём ${moneyBig(k.expectedRest)}` : 'всё собрано'}</span><${Spark} values=${hist.map((m) => m.income)} /></div>
-    <div class="kpi" title=${`Расходы в ${C.ymPrep(d.ym)}: ${money(k.cur.out)}`}><span class="kpi-label">Расходы<span class="only-wide"> · ${mon}</span></span><span class="kpi-value">${moneyBig(k.cur.out)}</span><span class="kpi-sub">${k.toPay > 0 ? `к выплате ${moneyBig(k.toPay)}` : 'выплат нет'}</span><${Spark} values=${hist.map((m) => m.out)} color="var(--series-2)" /></div>
-    <div class="kpi" title=${`Прибыль в ${C.ymPrep(d.ym)}: ${money(k.cur.net)}`}><span class="kpi-label">Прибыль<span class="only-wide"> · ${mon}</span></span><span class=${cx('kpi-value', k.cur.net < 0 && 'neg')}>${moneyBig(k.cur.net)}</span><span class="kpi-sub">${C.ymShort(C.ymAdd(d.ym, -1))}: ${moneyBig(k.prev.net)}</span><${Spark} values=${hist.map((m) => m.net)} color="var(--ok-mark)" /></div>
+    <div class="kpi">
+      <span class="kpi-label">Собрано за ${C.ymName(d.ym)}</span>
+      <span class="kpi-value">${moneyBig(eco.collected)}</span>
+      <div class=${cx('meter', pct >= 100 && 'done')} style="margin:6px 0 4px"><i style=${`width:${pct}%`}></i></div>
+      <span class="kpi-sub">${eco.income > 0 ? `${pct}% из ${money(eco.income)}${eco.income > eco.collected ? ` · осталось ${money(C.r2(eco.income - eco.collected))}` : ''}` : 'начислений пока нет'}</span>
+    </div>
+    <button class="kpi" onClick=${() => { store.setUI({ payrollTab: 'due' }); go('teachers'); }}>
+      <span class="kpi-label">Выплатить сейчас</span>
+      <span class=${cx('kpi-value', payLate > 0 && 'neg')}>${moneyBig(C.r2(payNow + recNow))}</span>
+      <span class="kpi-sub">${payNow + recNow > 0 ? [payNow > 0 && `зарплаты ${money(payNow)}`, recNow > 0 && `подписки ${money(recNow)}`].filter(Boolean).join(' · ') : 'никому не должны'}</span>
+      ${payLate > 0 && html`<span class="kpi-sub" style="color:var(--overdue)">из них просрочено ${money(payLate)}</span>`}
+    </button>
+    <button class="kpi" onClick=${() => { store.setUI({ financeTab: 'month' }); go('finance'); }}>
+      <span class="kpi-label">Прибыль ${C.ymGen(d.ym)}</span>
+      <span class=${cx('kpi-value', forecast < 0 && 'neg')}>${moneyBig(forecast)}</span>
+      <span class="kpi-sub">прогноз, если все оплатят</span>
+      <span class="kpi-sub">сейчас по кассе ${money(k.cur.net)}</span>
+    </button>
   </div>`;
+}
+
+// ---------- Сделать сегодня ----------
+export function summaryText(d, i) {
+  const st = S(), lines = [`${st.settings.orgName} — сводка на ${C.fmtDateLong(d.today)}`];
+  if (i.debtors.length) { lines.push('', `Должны: ${money(i.owed)}`); for (const x of i.debtors.slice(0, 15)) lines.push(`— ${x.s.name}: ${money(x.L.dueNow)}${x.days ? `, просрочено ${x.days} дн.` : ''}`); }
+  const soon = d.debtors.filter((s) => d.student(s.id).status !== 'overdue');
+  if (soon.length) { lines.push('', 'Скоро срок оплаты:'); for (const s of soon.slice(0, 15)) { const L = d.student(s.id); lines.push(`— ${s.name}: ${money(L.dueNow)}, ${C.fmtDate(L.due[0].due)}`); } }
+  if (d.teachersDue.length) { lines.push('', 'Выплатить преподавателям:'); for (const t of d.teachersDue) { const L = d.teacher(t.id); lines.push(`— ${t.name}: ${money(L.dueNow)} (${[...new Set(L.due.map((c) => c.label))].join(', ')})`); } }
+  if (d.recurringDue.length) { lines.push('', 'Оплатить:'); for (const r of d.recurringDue) lines.push(`— ${r.name}: ${money(d.recurring(r.id).dueNow)}`); }
+  const warn = [];
+  if (i.longDebt.length) warn.push(`${i.longDebt.length} ${C.plural(i.longDebt.length, 'ученик не платит', 'ученика не платят', 'учеников не платят')} больше месяца (${money(i.longDebtSum)})`);
+  if (i.noPrice.length) warn.push(`без цены: ${i.noPrice.map((s) => s.name).join(', ')}`);
+  for (const r of i.loss) warn.push(`${r.label}: доход ${money(r.income)}, преподавателю ${money(r.cost)}`);
+  if (warn.length) { lines.push('', 'Внимание:'); for (const w of warn) lines.push('— ' + w); }
+  if (lines.length === 1) lines.push('', 'Сегодня всё в порядке: долгов и выплат нет.');
+  return lines.join('\n');
+}
+function Tasks({ d, i }) {
+  const [open1, setOpen] = useState('');
+  const now = d.debtors.filter((s) => ['overdue', 'today'].includes(d.student(s.id).status));
+  const nowSum = C.r2(now.reduce((a, s) => a + d.student(s.id).dueNow, 0));
+  const teachersNow = d.teachersDue.filter((t) => ['overdue', 'today'].includes(d.teacher(t.id).status));
+  const tSum = C.r2(teachersNow.reduce((a, t) => a + d.teacher(t.id).dueNow, 0));
+  const recNow = d.recurringDue.filter((r) => ['overdue', 'today'].includes(d.recurring(r.id).status));
+  const items = [
+    { key: 'collect', icon: 'in', tone: now.some((s) => d.student(s.id).status === 'overdue') ? 'bad' : 'warn', show: now.length > 0, title: `Получить оплату от ${now.length} ${C.plural(now.length, 'ученика', 'учеников', 'учеников')}`, sub: 'срок сегодня или уже прошёл', amount: nowSum,
+      list: () => now.map((s) => html`<${StudentRow} key=${s.id} s=${s} L=${d.student(s.id)} />`) },
+    { key: 'remind', icon: 'bell', tone: 'warn', show: i.remindAgain.length > 0, title: `Напомнить ${i.remindAgain.length} ${C.plural(i.remindAgain.length, 'должнику', 'должникам', 'должникам')}`, sub: 'не напоминали 5 дней и больше', amount: C.r2(i.remindAgain.reduce((a, x) => a + x.amount, 0)),
+      list: () => i.remindAgain.map((x) => html`<div class="row" key=${x.s.id}><div class="row-main"><div class="row-title"><span>${x.s.name}</span></div><div class="row-sub">${x.days ? `просрочено ${x.days} дн.` : 'закончился абонемент'} · ${x.since == null ? 'ещё не напоминали' : `напоминали ${x.since} дн. назад`}</div></div><span class="row-amount">${money(x.amount)}</span><div class="row-actions"><button class="btn sm" onClick=${() => open('remind', { id: x.s.id })}><${Icon} name="bell" cls="s" /><span class="only-wide">Напомнить</span></button></div></div>`) },
+    { key: 'pay', icon: 'cash', tone: teachersNow.some((t) => d.teacher(t.id).status === 'overdue') ? 'bad' : 'warn', show: teachersNow.length > 0, title: `Выплатить ${teachersNow.length} ${C.plural(teachersNow.length, 'преподавателю', 'преподавателям', 'преподавателям')}`, sub: 'срок сегодня или уже прошёл', amount: tSum,
+      list: () => teachersNow.map((t) => { const L = d.teacher(t.id); return html`<div class="row" key=${t.id}><div class="row-main"><div class="row-title"><span>${t.name}</span></div><div class="row-sub">${[...new Set(L.due.map((c) => c.label))].join(', ')} · ${dueText(L.due[0].due)}</div></div><span class="row-amount">${money(L.dueNow)}</span><div class="row-actions"><button class="btn sm good" onClick=${() => open('payout', { id: t.id })}><${Icon} name="cash" cls="s" /><span class="only-wide">Выплатить</span></button></div></div>`; }) },
+    { key: 'subs', icon: 'repeat', tone: 'warn', show: recNow.length > 0, title: `Оплатить ${recNow.length} ${C.plural(recNow.length, 'подписку', 'подписки', 'подписок')}`, sub: recNow.map((r) => r.name).join(', '), amount: C.r2(recNow.reduce((a, r) => a + d.recurring(r.id).dueNow, 0)),
+      list: () => recNow.map((r) => { const c = d.recurring(r.id).due[0]; return html`<div class="row" key=${r.id}><div class="row-main"><div class="row-title"><span>${r.name}</span></div><div class="row-sub">${C.ymName(c.ym)} · ${dueText(c.due)}</div></div><span class="row-amount">${money(c.amount)}</span><div class="row-actions"><button class="btn sm good" onClick=${() => quickRecurring(r.id, c.ym)}><${Icon} name="check" cls="s" /><span class="only-wide">Оплачено</span></button></div></div>`; }) },
+  ].filter((x) => x.show);
+  const copy = async () => toast((await copyText(summaryText(d, i))) ? 'Сводка скопирована — её можно вставить в заметки или отправить себе в мессенджер' : 'Не удалось скопировать');
+  return html`<section class="card flush">
+    <div class="card-head"><div><h2>Сделать сегодня</h2><div class="hint">${items.length ? `${items.length} ${C.plural(items.length, 'дело', 'дела', 'дел')} — нажмите, чтобы раскрыть` : C.fmtDateLong(d.today)}</div></div><button class="btn sm ghost" title="Скопировать сводку на сегодня текстом" onClick=${copy}><${Icon} name="copy" cls="s" />Сводка</button></div>
+    ${items.length ? html`<div class="rows">${items.map((x) => html`<div key=${x.key}>
+      <button class=${cx('task', x.tone, open1 === x.key && 'is-open')} aria-expanded=${open1 === x.key} onClick=${() => setOpen(open1 === x.key ? '' : x.key)}>
+        <span class=${cx('task-ic', x.tone)}><${Icon} name=${x.icon} /></span>
+        <span class="row-main"><span class="row-title"><span>${x.title}</span></span><span class="row-sub">${x.sub}</span></span>
+        <span class="row-amount">${money(x.amount)}</span><${Icon} name="down" cls="s faint chev" />
+      </button>
+      ${open1 === x.key && html`<div class="task-list rows">${x.list()}</div>`}
+    </div>`)}</div>`
+      : html`<div class="all-done"><span class="task-ic good"><${Icon} name="check" /></span><div><b>На сегодня всё сделано</b><div class="hint">Просроченных оплат и выплат нет. Ближайшие сроки — в блоке «Ближайшие 7 дней».</div></div></div>`}
+  </section>`;
+}
+
+// ---------- Где теряются деньги ----------
+function Leaks({ d, i }) {
+  const [open1, setOpen] = useState('');
+  const [showOk, setShowOk] = useState(false);
+  const st = S();
+  const sRow = (s, right, sub) => html`<div class="row tap" key=${s.id} ...${tap(() => open('student', { id: s.id }))}><div class="row-main"><div class="row-title"><span>${s.name}</span></div>${sub && html`<div class="row-sub">${sub}</div>`}</div>${right}</div>`;
+  const checks = [
+    { key: 'long', bad: i.longDebt.length > 0, tone: 'bad', title: i.longDebt.length ? `${i.longDebt.length} ${C.plural(i.longDebt.length, 'ученик не платит', 'ученика не платят', 'учеников не платят')} больше месяца` : 'Долгов дольше месяца нет', sub: 'чем дольше долг, тем меньше шансов его получить — позвоните или договоритесь о рассрочке', amount: i.longDebtSum,
+      list: () => i.longDebt.map((x) => sRow(x.s, html`<span class="row-amount">${money(x.amount)}</span>`, `просрочено ${x.days} дн.`)) },
+    { key: 'noprice', bad: i.noPrice.length > 0, tone: 'bad', title: i.noPrice.length ? `${i.noPrice.length} ${C.plural(i.noPrice.length, 'ученик занимается', 'ученика занимаются', 'учеников занимаются')} без цены` : 'У всех учеников задана цена', sub: 'им ничего не начисляется — укажите цену в карточке', amount: null,
+      list: () => i.noPrice.map((s) => sRow(s, html`<button class="btn sm" onClick=${(e) => { e.stopPropagation(); open('studentForm', { id: s.id }); }}>Указать цену</button>`, (st.groups.find((g) => g.id === s.groupId) || {}).name || 'индивидуально')) },
+    { key: 'loss', bad: i.loss.length > 0, tone: 'bad', title: i.loss.length ? `${i.loss.length} ${C.plural(i.loss.length, 'группа убыточна', 'группы убыточны', 'групп убыточны')}` : 'Убыточных групп нет', sub: `преподавателю платите больше, чем приносят ученики за ${C.ymName(d.ym)}`, amount: C.r2(i.loss.reduce((a, r) => a - r.margin, 0)),
+      list: () => i.loss.map((r) => html`<div class="row tap" key=${r.key} ...${tap(() => r.group && open('group', { id: r.group.id }))}><div class="row-main"><div class="row-title"><span>${r.label}</span></div><div class="row-sub">ученики ${money(r.income)} · преподавателю ${money(r.cost)}</div></div><span class="row-amount" style="color:var(--overdue)">${money(r.margin)}</span></div>`) },
+    { key: 'remind', bad: i.remindAgain.length > 0, tone: 'warn', title: i.remindAgain.length ? `${i.remindAgain.length} ${C.plural(i.remindAgain.length, 'должнику давно не напоминали', 'должникам давно не напоминали', 'должникам давно не напоминали')}` : 'Всем должникам напомнили', sub: 'последнее напоминание 5 и больше дней назад', amount: C.r2(i.remindAgain.reduce((a, x) => a + x.amount, 0)),
+      list: () => i.remindAgain.map((x) => sRow(x.s, html`<button class="btn sm" onClick=${(e) => { e.stopPropagation(); open('remind', { id: x.s.id }); }}><${Icon} name="bell" cls="s" />Напомнить</button>`, x.since == null ? 'ещё не напоминали' : `напоминали ${x.since} дн. назад`)) },
+    { key: 'thin', bad: i.thin.length > 0, tone: 'warn', title: i.thin.length ? `${i.thin.length} ${C.plural(i.thin.length, 'группа почти ничего не приносит', 'группы почти ничего не приносят', 'групп почти ничего не приносят')}` : 'Все группы с запасом', sub: 'после зарплаты преподавателю остаётся меньше 25%', amount: null,
+      list: () => i.thin.map((r) => html`<div class="row tap" key=${r.key} ...${tap(() => r.group && open('group', { id: r.group.id }))}><div class="row-main"><div class="row-title"><span>${r.label}</span></div><div class="row-sub">ученики ${money(r.income)} · преподавателю ${money(r.cost)}</div></div><span class="row-amount">${r.pct}%</span></div>`) },
+    { key: 'disc', bad: i.discounts.length > 0, tone: 'info', title: i.discounts.length ? `Скидки и паузы в ${C.ymPrep(d.ym)}: −${money(i.discountSum)}` : `Скидок в ${C.ymPrep(d.ym)} нет`, sub: 'своя сумма ниже обычной цены', amount: null,
+      list: () => i.discounts.map((x) => sRow(x.s, html`<span class="row-amount">−${money(x.lost)}</span>`, `${money(x.amount)} вместо ${money(x.base)}`)) },
+    { key: 'unset', bad: i.unset.length + i.orphanGroups.length > 0, tone: 'warn', title: i.unset.length + i.orphanGroups.length ? 'Не настроены выплаты преподавателям' : 'Выплаты преподавателям настроены', sub: [i.unset.length && `сумма не задана: ${i.unset.map((u) => u.name).join(', ')}`, i.orphanGroups.length && `без преподавателя: ${i.orphanGroups.map((g) => g.name).join(', ')}`].filter(Boolean).join(' · ') || 'у каждой группы есть преподаватель и ставка', amount: null,
+      action: () => { store.setUI({ payrollTab: 'rates' }); go('teachers'); } },
+    { key: 'adv', bad: i.advances.length > 0, tone: 'info', title: i.advances.length ? `Выплачено вперёд: ${money(i.advances.reduce((a, x) => a + x.amount, 0))}` : 'Авансов преподавателям нет', sub: i.advances.map((x) => `${x.teacher.name} ${money(x.amount)}`).join(', ') || 'выплачено ровно столько, сколько начислено', amount: null,
+      action: i.advances.length ? () => open('teacher', { id: i.advances[0].teacher.id }) : null },
+  ];
+  const bad = checks.filter((c) => c.bad), ok = checks.filter((c) => !c.bad);
+  const row = (c) => html`<div key=${c.key}>
+    <button class=${cx('task', c.bad ? c.tone : 'ok', open1 === c.key && 'is-open')} aria-expanded=${open1 === c.key} onClick=${() => (c.list && c.bad ? setOpen(open1 === c.key ? '' : c.key) : c.action && c.action())}>
+      <span class=${cx('task-ic', c.bad ? c.tone : 'good')}><${Icon} name=${c.bad ? (c.tone === 'info' ? 'info' : 'alert') : 'check'} /></span>
+      <span class="row-main"><span class="row-title"><span>${c.title}</span></span>${c.bad && html`<span class="row-sub wrap">${c.sub}</span>`}</span>
+      ${c.bad && c.amount ? html`<span class="row-amount">${money(c.amount)}</span>` : null}${c.bad && (c.list || c.action) && html`<${Icon} name=${c.list ? 'down' : 'right'} cls="s faint chev" />`}
+    </button>
+    ${open1 === c.key && c.list && html`<div class="task-list rows">${c.list()}</div>`}
+  </div>`;
+  return html`<section class="card flush">
+    <div class="card-head"><div><h2>Где теряются деньги</h2><div class="hint">${bad.length ? `${bad.length} из ${checks.length} проверок требуют внимания` : 'Все проверки пройдены'}</div></div><span class=${cx('score', bad.some((c) => c.tone === 'bad') ? 'bad' : bad.length ? 'warn' : 'good')}>${checks.length - bad.length}/${checks.length}</span></div>
+    <div class="rows">${bad.map(row)}${(showOk || !bad.length) && ok.map(row)}</div>
+    ${bad.length > 0 && ok.length > 0 && html`<div class="card-foot"><button class="btn sm ghost" onClick=${() => setShowOk(!showOk)}>${showOk ? 'Скрыть пройденные' : `В порядке ещё ${ok.length} ${C.plural(ok.length, 'проверка', 'проверки', 'проверок')}`}</button></div>`}
+  </section>`;
+}
+
+// ---------- Экономика групп ----------
+export function EconomyCard({ d, i }) {
+  const e = i.economy;
+  if (!e.rows.length) return null;
+  return html`<section class="card flush">
+    <div class="card-head"><div><h2>Экономика групп · ${C.ymName(d.ym)}</h2><div class="hint">сколько приносят ученики и сколько остаётся после зарплаты</div></div></div>
+    <div class="rows only-narrow">${e.rows.map((r) => html`<div class="row tap" key=${r.key} ...${tap(() => (r.group ? open('group', { id: r.group.id }) : go('students')))}><div class="row-main"><div class="row-title"><span>${r.label}</span></div><div class="row-sub wrap">ученики ${money(r.income)} · ${r.cost ? `преподавателю ${money(r.cost)}` : r.salaryTeacher ? 'оклад' : 'без зарплаты за группу'}</div></div><div class="row-end"><span class=${cx('row-amount', r.margin < 0 ? 'neg-t' : r.pct != null && r.pct < 25 && r.cost > 0 ? 'warn-t' : '')}>${money(r.margin)}</span>${r.pct != null && r.cost > 0 ? html`<span class="xs faint">${r.pct}%</span>` : null}</div></div>`)}
+      <div class="row" style="background:var(--surface-2)"><div class="row-main"><div class="row-title"><span>Итого остаётся</span></div><div class="row-sub">ученики ${money(e.income)} · зарплаты ${money(C.r2(e.cost + e.salaries))}</div></div><span class=${cx('row-amount', e.margin < 0 && 'neg-t')}>${money(e.margin)}</span></div></div>
+    <div class="table-wrap only-wide"><table class="eco">
+      <thead><tr><th>Группа</th><th class="num">Ученики</th><th class="num only-wide">Собрано</th><th class="num"><span class="only-wide">Преподавателю</span><span class="only-narrow">Преп.</span></th><th class="num">Остаётся</th></tr></thead>
+      <tbody>${e.rows.map((r) => html`<tr class="tap" key=${r.key} onClick=${() => (r.group ? open('group', { id: r.group.id }) : (store.setUI({ studentsGroup: 'solo', studentsFilter: 'all', studentsView: 'list' }), go('students')))}>
+        <td><b>${r.label}</b><div class="sub">${r.teacher ? r.teacher.name : r.group ? 'без преподавателя' : ''}${r.salaryTeacher ? ' · оклад' : ''}</div></td>
+        <td class="num">${money(r.income)}</td>
+        <td class="num only-wide"><span class=${r.collected >= r.income ? 'ok-t' : ''}>${money(r.collected)}</span></td>
+        <td class="num">${r.cost ? money(r.cost) : r.salaryTeacher ? html`<span class="faint">оклад</span>` : html`<span class="faint">—</span>`}</td>
+        <td class="num"><b class=${r.margin < 0 ? 'neg-t' : r.pct != null && r.pct < 25 && r.cost > 0 ? 'warn-t' : ''}>${money(r.margin)}</b>${r.pct != null && r.cost > 0 ? html`<div class="sub">${r.pct}%</div>` : null}</td>
+      </tr>`)}</tbody>
+      <tfoot>
+        ${e.salaries > 0 && html`<tr><td>Оклады и занятия</td><td class="num"></td><td class="num only-wide"></td><td class="num">${money(e.salaries)}</td><td class="num">−${money(e.salaries)}</td></tr>`}
+        <tr><td>Итого</td><td class="num">${money(e.income)}</td><td class="num only-wide">${money(e.collected)}</td><td class="num">${money(C.r2(e.cost + e.salaries))}</td><td class="num"><b class=${e.margin < 0 ? 'neg-t' : ''}>${money(e.margin)}</b></td></tr>
+      </tfoot>
+    </table></div>
+    <div class="card-foot" style="justify-content:flex-start"><span class="hint">Подписки и прочие расходы сюда не входят — они в «Финансах».</span></div>
+  </section>`;
 }
 
 function Attention({ d }) {
   const [all, setAll] = useState(false);
   const list = all || d.debtors.length <= 8 ? d.debtors : d.debtors.slice(0, 6);
   return html`<section class="card flush">
-    <div class="card-head"><div><h2>Ждём оплату</h2><div class="hint">сначала просроченные, потом ближайшие ${d.remindDays} ${C.plural(d.remindDays, 'день', 'дня', 'дней')}</div></div>
+    <div class="card-head"><div><h2>Кто должен</h2><div class="hint">сначала просроченные, потом ближайшие ${d.remindDays} ${C.plural(d.remindDays, 'день', 'дня', 'дней')}</div></div>
       ${d.debtors.length > 0 && html`<button class="btn sm ghost" aria-label="Скопировать список должников" title="Скопировать список должников текстом" onClick=${async () => toast((await copyText(debtorsText())) ? 'Список должников скопирован' : 'Не удалось скопировать')}><${Icon} name="copy" cls="s" /><span class="only-wide">Список</span></button>`}</div>
     ${d.debtors.length ? html`<div class="rows">${list.map((s) => html`<${StudentRow} key=${s.id} s=${s} L=${d.student(s.id)} />`)}</div>`
       : html`<${Empty} icon="check" title=${d.activeStudents.length ? 'Все оплатили' : 'Учеников пока нет'}>${d.activeStudents.length ? `Напоминания появятся за ${d.remindDays} ${C.plural(d.remindDays, 'день', 'дня', 'дней')} до срока оплаты.` : 'Добавьте группу и учеников — здесь появится список тех, кому пора платить.'}<//>`}
@@ -98,15 +232,6 @@ export function CashflowCard({ d, range: r0, onRange }) {
     <div class="card-head"><h2>Доходы и расходы</h2><div class="toolbar">${onRange && html`<${Seg} value=${range} onChange=${onRange} options=${[[6, '6 мес'], [12, 'Год']]} />`}<button class="btn sm ghost icon" title=${table ? 'График' : 'Таблица'} aria-label=${table ? 'Показать график' : 'Показать таблицу'} onClick=${() => setTable(!table)}><${Icon} name=${table ? 'chart' : 'table'} /></button></div></div>
     ${table ? html`<div class="table-wrap"><table><thead><tr><th>Месяц</th><th class="num">Доходы</th><th class="num">Расходы</th><th class="num">Прибыль</th></tr></thead><tbody>${data.map((m) => html`<tr><td>${C.ymLong(m.ym)}</td><td class="num">${money(m.income)}</td><td class="num">${money(m.out)}</td><td class="num"><b>${money(m.net)}</b></td></tr>`)}</tbody></table></div>`
       : html`<${CashChart} data=${data} /><div class="legend" style="margin-top:8px"><span><i style="background:var(--series-1)"></i>Доходы</span><span><i style="background:var(--series-2)"></i>Расходы, включая зарплаты</span></div>`}
-  </section>`;
-}
-
-function GroupsCard({ d }) {
-  const c = useMemo(() => C.collection(S(), d, d.ym), [d]);
-  if (!c.rows.length) return null;
-  return html`<section class="card flush">
-    <div class="card-head"><div><h2>Сбор за ${C.ymName(d.ym)}</h2><div class="hint">${money(c.collected)} из ${money(c.expected)} · оплатили ${c.paidCount} из ${c.count}</div></div><button class="btn sm ghost" onClick=${() => { store.setUI({ studentsView: 'matrix' }); go('students'); }}>По месяцам<${Icon} name="right" cls="s" /></button></div>
-    <div>${c.rows.map((r) => html`<button class="gmeter" key=${r.key} onClick=${() => (r.group ? open('group', { id: r.group.id }) : (store.setUI({ studentsGroup: 'solo', studentsFilter: 'all', studentsView: 'list' }), go('students')))}><span class="name">${r.label}</span><${Meter} value=${r.collected} max=${r.expected} /><span class="val"><b>${money(r.collected)}</b> / ${money(r.expected)}</span></button>`)}</div>
   </section>`;
 }
 
@@ -186,23 +311,23 @@ export function Onboarding() {
 export function Home() {
   const st = S(), d = getDerived();
   const [range, setRange] = useState(6);
+  const i = useMemo(() => (hasData(st) ? C.insights(st, d) : null), [d]);
   if (!hasData(st)) return html`<div class="stack"><${Recovered} /><${Onboarding} /></div>`;
   const on = (id) => (st.settings.home.find((w) => w.id === id) || { on: true }).on;
   const W = {
-    kpi: () => html`<${Kpis} d=${d} />`, attention: () => html`<${Attention} d=${d} />`, payouts: () => html`<${Payouts} d=${d} />`,
-    cashflow: () => html`<${CashflowCard} d=${d} range=${range} onRange=${setRange} />`, groups: () => html`<${GroupsCard} d=${d} />`, upcoming: () => html`<${Upcoming} d=${d} />`, recent: () => html`<${Recent} d=${d} />`,
+    tasks: () => html`<${Tasks} d=${d} i=${i} />`, attention: () => html`<${Attention} d=${d} />`, leaks: () => html`<${Leaks} d=${d} i=${i} />`, payouts: () => html`<${Payouts} d=${d} />`,
+    economy: () => html`<${EconomyCard} d=${d} i=${i} />`, cashflow: () => html`<${CashflowCard} d=${d} range=${range} onRange=${setRange} />`, upcoming: () => html`<${Upcoming} d=${d} />`, recent: () => html`<${Recent} d=${d} />`,
   };
-  const order = st.settings.home.filter((w) => w.on && W[w.id]).map((w) => w.id);
-  // на широком экране списки встают в две колонки: слева то, что требует действий, справа — справочное
-  const left = order.filter((id) => ['attention', 'cashflow', 'recent'].includes(id)), right = order.filter((id) => ['payouts', 'groups', 'upcoming'].includes(id));
+  const pick = (ids) => ids.filter((id) => on(id) && W[id]);
+  const pair = (a, b) => { const l = pick(a), r = pick(b); if (!l.length && !r.length) return null; return html`<div class=${cx('cols', (!l.length || !r.length) && 'even')}>${l.length > 0 && html`<div class="stack">${l.map((id) => html`<div key=${id}>${W[id]()}</div>`)}</div>`}${r.length > 0 && html`<div class="stack">${r.map((id) => html`<div key=${id}>${W[id]()}</div>`)}</div>`}</div>`; };
   return html`<div class="stack">
     <${Recovered} />
     ${sync.status === 'conflict' && html`<div class="banner warn"><${Icon} name="alert" /><div class="grow"><b>Данные в аккаунте и на этом устройстве различаются</b><div class="small muted">Пока вы не выберете, какие оставить, синхронизация приостановлена.</div></div><button class="btn sm primary" onClick=${() => open('syncConflict', {})}>Выбрать</button></div>`}
     <${Banners} d=${d} />
-    ${on('kpi') && W.kpi()}
-    <div class=${cx('cols', (!left.length || !right.length) && 'even')}>
-      ${left.length > 0 && html`<div class="stack">${left.map((id) => html`<div key=${id}>${W[id]()}</div>`)}</div>`}
-      ${right.length > 0 && html`<div class="stack">${right.map((id) => html`<div key=${id}>${W[id]()}</div>`)}</div>`}
-    </div>
+    ${on('kpi') && html`<${Hero} d=${d} i=${i} />`}
+    ${pair(['tasks', 'attention'], ['leaks', 'payouts'])}
+    ${on('economy') && html`<${EconomyCard} d=${d} i=${i} />`}
+    ${pair(['cashflow'], ['upcoming'])}
+    ${pair(['recent'], [])}
   </div>`;
 }

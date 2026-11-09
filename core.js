@@ -618,3 +618,86 @@ export function matchScore(name, q) {
   if (qs.length > 1 && qs.every((w) => n.includes(w))) return 30;
   return 0;
 }
+
+// ---------- Где теряются деньги ----------
+/** Экономика групп за месяц ym: сколько начислено ученикам (и получено), сколько уходит преподавателю, что остаётся. */
+export function groupEconomy(state, d, ym) {
+  const col = collection(state, d, ym);
+  const byKey = new Map(col.rows.map((r) => [r.key, r]));
+  // абонементы не начисляются помесячно — для них берём оплаты, полученные в этом месяце
+  const pkgIn = new Map();
+  for (const p of d.payments) {
+    if (p.kind !== 'income' || ymOf(p.date) !== ym) continue;
+    const s = d.idx.students.get(p.personId);
+    if (!s || s.payType !== 'package') continue;
+    const k = p.groupId != null ? p.groupId : s.groupId || '';
+    pkgIn.set(k, r2((pkgIn.get(k) || 0) + (Number(p.amount) || 0)));
+  }
+  const cost = new Map();
+  let salaries = 0;
+  for (const t of d.activeTeachers) {
+    const L = ym > ymOf(d.today) ? teacherLedger(t, state, d.idx, { today: d.today, remindDays: d.remindDays, toYm: ym, noAhead: true }) : d.teacher(t.id);
+    for (const c of L.lines) {
+      if (c.ym !== ym || !(c.amount > 0)) continue;
+      if (c.src === 'group') cost.set(c.refId, r2((cost.get(c.refId) || 0) + c.amount));
+      else if (c.src === 'student') cost.set('', r2((cost.get('') || 0) + c.amount));
+      else if (c.src === 'salary' || c.src === 'lessons') salaries = r2(salaries + c.amount);
+    }
+  }
+  const rows = [];
+  const add = (key, label, g) => {
+    const r = byKey.get(key) || { expected: 0, collected: 0, count: 0, paidCount: 0 };
+    const extra = pkgIn.get(key) || 0;
+    const income = r2(r.expected + extra), got = r2(r.collected + extra), c = cost.get(key) || 0;
+    if (!(income > 0) && !(c > 0)) return;
+    const t = g ? d.teachers.get(g.teacherId) : null;
+    rows.push({ key, label, group: g || null, teacher: t || null, income, collected: got, cost: c, margin: r2(income - c), pct: income > 0 ? Math.round(((income - c) / income) * 100) : null, salaryTeacher: !!(t && t.payType !== 'perGroup'), count: r.count, paidCount: r.paidCount });
+  };
+  for (const g of d.activeGroups) add(g.id, g.name, g);
+  add('', 'Индивидуально', null);
+  rows.sort((a, b) => b.income - a.income || a.label.localeCompare(b.label, 'ru'));
+  const sum = (f) => r2(rows.reduce((a, r) => a + f(r), 0));
+  return { ym, rows, income: sum((r) => r.income), collected: sum((r) => r.collected), cost: sum((r) => r.cost), salaries, margin: r2(sum((r) => r.income) - sum((r) => r.cost) - salaries) };
+}
+
+/** Всё, из-за чего можно недополучить деньги: долги по давности, ученики без цены, скидки, убыточные группы и т. п. */
+export function insights(state, d) {
+  const t = d.today, ym = d.ym;
+  const aging = [{ key: 'a', label: 'до 7 дней', amount: 0, n: 0 }, { key: 'b', label: '8–30 дней', amount: 0, n: 0 }, { key: 'c', label: 'больше 30 дней', amount: 0, n: 0 }];
+  const longDebt = [], remindAgain = [], debtors = [];
+  for (const s of d.activeStudents) {
+    const L = d.student(s.id);
+    if (L.package) { if (L.status === 'overdue') { debtors.push({ s, days: 0, amount: L.price, L }); if (!s.remindedAt || diffDays(t, s.remindedAt) >= 5) remindAgain.push({ s, days: 0, amount: L.price }); } continue; }
+    const od = L.due.filter((c) => c.status === 'overdue');
+    if (!od.length) continue;
+    for (const c of od) { const days = diffDays(t, c.due); const b = aging[days <= 7 ? 0 : days <= 30 ? 1 : 2]; b.amount = r2(b.amount + c.rest); }
+    const days = diffDays(t, od[0].due);
+    aging[days <= 7 ? 0 : days <= 30 ? 1 : 2].n++;
+    const amount = r2(od.reduce((a, c) => a + c.rest, 0));
+    debtors.push({ s, days, amount, L });
+    if (days > 30) longDebt.push({ s, days, amount });
+    const since = s.remindedAt ? diffDays(t, s.remindedAt) : null;
+    if (since == null || since >= 5) remindAgain.push({ s, days, amount, since });
+  }
+  const priceOf = (s) => Number((rateAt(s.rates, ym) || {}).price) || 0;
+  const noPrice = d.activeStudents.filter((s) => !(priceOf(s) > 0));
+  const discounts = [];
+  for (const s of d.activeStudents) {
+    if (s.payType === 'package') continue;
+    const c = d.student(s.id).charges.find((x) => x.key === 'm:' + ym);
+    if (c && c.custom && c.amount < c.base) discounts.push({ s, base: c.base, amount: c.amount, lost: r2(c.base - c.amount) });
+  }
+  const orphanGroups = d.activeGroups.filter((g) => !d.teachers.get(g.teacherId) && d.activeStudents.some((s) => s.groupId === g.id));
+  const unset = d.activeTeachers.flatMap((x) => teacherUnset(x, state).map((u) => ({ ...u, teacher: x })));
+  const economy = groupEconomy(state, d, ym);
+  const loss = economy.rows.filter((r) => r.cost > 0 && r.margin < 0);
+  const thin = economy.rows.filter((r) => r.cost > 0 && r.margin >= 0 && r.pct != null && r.pct < 25);
+  const advances = d.activeTeachers.map((x) => ({ teacher: x, amount: d.teacher(x.id).credit })).filter((x) => x.amount > 0);
+  const owed = r2(aging.reduce((a, b) => a + b.amount, 0));
+  debtors.sort((a, b) => b.days - a.days || b.amount - a.amount);
+  return {
+    aging, owed, debtors, longDebt, remindAgain, noPrice, discounts, discountSum: r2(discounts.reduce((a, x) => a + x.lost, 0)),
+    orphanGroups, unset, economy, loss, thin, advances,
+    longDebtSum: r2(longDebt.reduce((a, x) => a + x.amount, 0)),
+  };
+}

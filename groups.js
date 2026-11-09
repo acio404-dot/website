@@ -28,6 +28,7 @@ export function Groups() {
   const groups = st.groups.filter((g) => d.inProject(g) && !!g.archived === arch).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
   const solo = d.activeStudents.filter((s) => !byId(st.groups, s.groupId));
   const order = (list) => list.slice().sort((a, b) => C.STATUS_ORDER[d.student(a.id).status] - C.STATUS_ORDER[d.student(b.id).status] || a.name.localeCompare(b.name, 'ru'));
+  const eco = useMemo(() => C.groupEconomy(st, d, d.ym), [d]);
   const person = (s) => { const L = d.student(s.id); return html`<button class=${cx('person', L.status !== 'ok' && L.status)} key=${s.id} title=${L.dueNow ? `к оплате ${money(L.dueNow)}` : 'оплачено'} onClick=${() => open('student', { id: s.id })}><span class=${cx('dot', L.status)}></span>${s.name}</button>`; };
   return html`<div class="stack">
     <div class="page-tools" style="margin-bottom:0">
@@ -35,10 +36,11 @@ export function Groups() {
       <button class="btn primary push" onClick=${() => open('groupForm', {})}><${Icon} name="plus" cls="s" />Группа</button>
     </div>
     ${groups.length ? html`<div class="gcards">${groups.map((g) => {
-      const x = groupStats(g, d), t = byId(st.teachers, g.teacherId);
+      const x = groupStats(g, d), t = byId(st.teachers, g.teacherId), er = eco.rows.find((r) => r.key === g.id);
       return html`<section class=${cx('card gcard', g.archived && 'is-archived')} key=${g.id}>
         <div class="row tap" style="padding:0;border:0" ...${tap(() => open('group', { id: g.id }))}><${Avatar} group name=${g.name} color=${g.color} /><div class="row-main"><div class="row-title"><span>${g.name}</span></div><div class="row-sub">${[t && t.name, g.schedule, g.payType === 'package' ? `абонемент ${g.lessonsInPackage} зан.` : `оплата ${g.payDay}-го${everyNote(g)}`].filter(Boolean).join(' · ')}</div></div><${Icon} name="right" cls="faint" /></div>
         <div class="gstats"><div><div class="label">Учеников</div><b>${x.members.length}</b></div><div><div class="label">Ждём оплату</div><b style=${x.due.length ? 'color:var(--overdue)' : ''}>${x.due.length ? money(x.dueSum) : '—'}</b></div><div><div class="label">Цена</div><b>${money(g.price)}</b></div></div>
+${er && (er.cost > 0 || er.salaryTeacher) && html`<div class="econ" title=${`За ${C.ymName(d.ym)}: начислено ученикам, зарплата преподавателю за группу и что остаётся`}><div><div class="label">Приносит</div><b>${money(er.income)}</b></div><div><div class="label">Зарплата</div><b>${er.cost > 0 ? money(er.cost) : 'оклад'}</b></div><div title=${er.pct != null && er.cost > 0 ? `${er.pct}% от того, что приносит группа` : ''}><div class="label">Остаётся</div><b class=${er.margin < 0 ? 'neg-t' : er.pct != null && er.pct < 25 && er.cost > 0 ? 'warn-t' : 'ok-t'}>${money(er.margin)}${er.pct != null && er.cost > 0 ? html` <small class="pct">${er.pct}%</small>` : ''}</b></div></div>`}
         ${x.exp > 0 && html`<div><div class="spread small" style="margin-bottom:5px"><span class="muted">Сбор за ${C.ymName(d.ym)}</span><span class="num"><b>${money(x.got)}</b> из ${money(x.exp)}</span></div><${Meter} value=${x.got} max=${x.exp} /></div>`}
         ${x.members.length ? html`<div class="people">${order(x.members).map(person)}</div>` : html`<div class="hint">В группе пока нет учеников.</div>`}
         ${!g.archived && html`<div class="toolbar"><button class="btn sm soft" onClick=${() => open('studentForm', { groupId: g.id })}><${Icon} name="userPlus" cls="s" />Ученик</button>${x.due.length > 0 && html`<button class="btn sm good" onClick=${() => open('bulkPay', { groupId: g.id })}><${Icon} name="check" cls="s" />Отметить оплаты</button>`}</div>`}
@@ -53,6 +55,7 @@ function GroupSheetI({ id, close }) {
   const g = byId(st.groups, id);
   if (!g) return null;
   const x = groupStats(g, d), t = byId(st.teachers, g.teacherId);
+  const er = C.groupEconomy(st, d, d.ym).rows.find((r) => r.key === g.id);
   const members = x.members.slice().sort((a, b) => C.STATUS_ORDER[d.student(a.id).status] - C.STATUS_ORDER[d.student(b.id).status] || a.name.localeCompare(b.name, 'ru'));
   const archived = st.students.filter((s) => s.groupId === g.id && s.archived);
   const tLine = t && t.payType === 'perGroup' ? d.teacher(t.id).lines.filter((c) => c.refId === g.id && c.rest > 0) : [];
@@ -67,6 +70,7 @@ function GroupSheetI({ id, close }) {
       <div class="row" style="padding:0;border:0"><${Avatar} group name=${g.name} color=${g.color} size="lg" /><div class="row-main"><div class="row-title"><span>${t ? t.name : 'Преподаватель не указан'}</span>${g.archived && html`<${Pill} status="muted">архив<//>`}</div><div class="row-sub wrap">${[g.subject, g.schedule, g.payType === 'package' ? `абонемент ${g.lessonsInPackage} зан. · ${money(g.price)}` : `${money(g.price)} ${C.everyOf(g) > 1 ? `за ${C.everyOf(g)} мес.` : 'в месяц'} · оплата ${g.payDay}-го${everyNote(g)}`].filter(Boolean).join(' · ')}</div></div></div>
       ${!g.archived && x.members.length > 0 && html`<div class="toolbar"><button class="btn sm" onClick=${() => open('monthAmounts', { groupId: id, ym: d.ym })}><${Icon} name="edit" cls="s" />Суммы за ${C.ymName(d.ym)}</button><button class="btn sm" onClick=${() => open('moveStudents', { fromGroup: id })}><${Icon} name="layers" cls="s" />Перевести учеников</button></div>`}
       ${x.exp > 0 && html`<div class="balance"><div class="spread"><div><div class="small muted">Сбор за ${C.ymName(d.ym)}</div><div class="big">${money(x.got)} <span class="muted" style="font-size:16px;font-weight:500">из ${money(x.exp)}</span></div></div>${x.due.length > 0 && html`<button class="btn good" onClick=${() => open('bulkPay', { groupId: id })}><${Icon} name="check" cls="s" />Отметить оплаты</button>`}</div><${Meter} value=${x.got} max=${x.exp} />${x.due.length > 0 && html`<div class="small">Ждём ${money(x.dueSum)} от ${x.due.length} ${C.plural(x.due.length, 'ученика', 'учеников', 'учеников')}</div>`}</div>`}
+${er && (er.cost > 0 || er.salaryTeacher) && html`<div class="econ" title=${`За ${C.ymName(d.ym)}: начислено ученикам, зарплата преподавателю за группу и что остаётся`}><div><div class="label">Приносит</div><b>${money(er.income)}</b></div><div><div class="label">Зарплата</div><b>${er.cost > 0 ? money(er.cost) : 'оклад'}</b></div><div title=${er.pct != null && er.cost > 0 ? `${er.pct}% от того, что приносит группа` : ''}><div class="label">Остаётся</div><b class=${er.margin < 0 ? 'neg-t' : er.pct != null && er.pct < 25 && er.cost > 0 ? 'warn-t' : 'ok-t'}>${money(er.margin)}${er.pct != null && er.cost > 0 ? html` <small class="pct">${er.pct}%</small>` : ''}</b></div></div>`}
       ${t && html`<div><div class="sec-title">Оплата преподавателю</div>
         ${t.payType !== 'perGroup' ? html`<div class="hint">${t.name}: ${t.payType === 'salary' ? 'оклад' : 'оплата за занятия'} — отдельно по группам не начисляется.</div>`
           : payLabel(g.pay, d.ym) ? html`<div class="card flush"><div class="row"><div class="row-main"><div class="row-title"><span>${payLabel(g.pay, d.ym)}</span></div><div class="row-sub">${tLine.length ? `к выплате ${money(tLine.reduce((a, c) => a + c.rest, 0))} · ${tLine.map((c) => C.ymName(c.ym)).join(', ')}` : 'всё выплачено'}</div></div>${tLine.length > 0 && html`<button class="btn sm good" onClick=${() => open('payout', { id: t.id })}>Выплатить</button>`}</div></div>`
