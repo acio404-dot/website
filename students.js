@@ -2,7 +2,7 @@
 import { html, useState, useMemo, useRef, useLayoutEffect } from './vendor.js';
 import { store, act } from './store.js';
 import * as C from './core.js';
-import { guard, money, cx, Icon, Sheet, Avatar, Pill, Empty, Seg, SearchInput, getDerived, open, sheets, openMenu, confirmSheet, dueText, studentInfo, toast, tap } from './ui.js';
+import { guard, money, cx, Icon, Sheet, Avatar, Pill, Empty, Seg, SearchInput, getDerived, open, sheets, openMenu, confirmSheet, dueText, studentInfo, toast, tap, monthOptions } from './ui.js';
 import { quickPay } from './quick.js';
 import { StudentRow, PaymentRow } from './home.js';
 
@@ -55,13 +55,13 @@ function Matrix({ list, d }) {
     <div class="card-head"><div class="legend"><span><i style="background:var(--ok-bg);outline:1px solid var(--ok)"></i>оплачено</span><span><i style="background:var(--overdue-bg);outline:1px solid var(--overdue)"></i>просрочено</span><span><i style="background:var(--soon-bg);outline:1px solid var(--soon)"></i>скоро срок</span></div>
       <div class="toolbar"><button class="btn sm icon ghost" aria-label="Раньше" onClick=${() => shift(-1)}><${Icon} name="left" /></button><button class="btn sm ghost" onClick=${() => shift(0)}>Сегодня</button><button class="btn sm icon ghost" aria-label="Позже" onClick=${() => shift(1)}><${Icon} name="right" /></button></div></div>
     <div class="table-wrap" ref=${wrap}><table class="matrix">
-      <thead><tr><th>Ученик</th>${months.map((ym) => html`<th class=${cx('num', ym === d.ym && 'cur')}>${C.ymShort(ym, true)}</th>`)}</tr></thead>
+      <thead><tr><th>Ученик</th>${months.map((ym) => html`<th class=${cx('num', ym === d.ym && 'cur')}><button class="linkbtn" title=${`Изменить суммы за ${C.ymName(ym)}`} onClick=${() => open('monthAmounts', { ids: list.map((s) => s.id), ym })}>${C.ymShort(ym, true)}</button></th>`)}</tr></thead>
       <tbody>${sections.map(({ g, m }) => html`
         <tr class="sec"><td colspan=${months.length + 1}><span class="stick">${g ? g.name : 'Индивидуально'}<span class="faint" style="font-weight:500">${g ? ` · ${g.payDay}-го числа${C.everyOf(g) > 1 ? ' · ' + C.everyLabel(C.everyOf(g)) : ''}${byId(st.teachers, g.teacherId) ? ' · ' + byId(st.teachers, g.teacherId).name : ''}` : ''}</span></span></td></tr>
         ${m.map((s) => html`<tr key=${s.id}><td><a href="#" onClick=${(e) => { e.preventDefault(); open('student', { id: s.id }); }} style="color:inherit;font-weight:600">${s.name}</a></td>${months.map((ym) => html`<${Cell} s=${s} L=${led.get(s.id)} ym=${ym} />`)}</tr>`)}`)}</tbody>
       <tfoot><tr><td>Собрано / начислено</td>${tot.map((x) => html`<td class="num"><div>${money(x.got)}</div><div class="sub" style="font-weight:500">из ${money(x.exp)}</div></td>`)}</tr></tfoot>
     </table></div>
-    <div class="card-foot" style="justify-content:flex-start"><span class="hint">Нажмите на ячейку, чтобы записать оплату, изменить сумму месяца или поставить паузу. Оплата всегда гасит самый старый долг.</span></div>
+    <div class="card-foot" style="justify-content:flex-start"><span class="hint">Нажмите на ячейку, чтобы записать оплату, изменить сумму месяца или поставить паузу; на название месяца — чтобы поменять суммы за месяц сразу всем. Оплата всегда гасит самый старый долг.</span></div>
   </section>`;
 }
 
@@ -136,6 +136,7 @@ function StudentSheetI({ id, close }) {
   const price = Number((C.rateAt(s.rates, d.ym) || {}).price) || 0;
   const payRate = !s.groupId && s.pay && C.rateAt(s.pay.rates, d.ym);
   const more = (e) => openMenu(e, [
+    !s.archived && { label: g ? 'Перевести в другую группу…' : 'Перевести в группу…', icon: 'layers', onClick: () => open('moveStudents', { ids: [id] }) },
     !L.package && { label: 'Доп. начисление…', icon: 'plus', onClick: () => open('extraForm', { id }) },
     s.archived ? { label: 'Вернуть из архива', icon: 'undo', onClick: () => act.restoreStudent(id) }
       : { label: 'В архив', icon: 'archive', onClick: () => (L.dueNow > 0 ? confirmSheet({ title: `${s.name}: в архив?`, text: `Неоплаченные ${money(L.dueNow)} будут списаны, новые месяцы начисляться перестанут. История оплат сохранится.`, ok: 'В архив', onOk: () => act.archiveStudent(id) }) : act.archiveStudent(id)) },
@@ -160,6 +161,7 @@ function StudentSheetI({ id, close }) {
           ${L.package && html`<button class="btn" onClick=${() => act.lessonUsed(id, 1)}>−1 занятие</button><button class="btn ghost" onClick=${() => act.lessonUsed(id, -1)}>вернуть</button>`}
         </div>`}
       </div>
+      ${!L.package && !s.archived && (() => { const c = L.charges.find((x) => x.key === 'm:' + d.ym); return html`<div class="card flush"><div class="row tap" ...${tap(() => open('chargeForm', { id, ym: d.ym }))}><${Avatar} icon="calendar" size="sm" /><div class="row-main"><div class="row-title"><span>За ${C.ymName(d.ym)}: ${c ? (c.amount > 0 ? money(c.amount) : 'не платит') : 'не начисляется'}</span>${c && c.custom && html`<${Pill} status="muted">своя сумма<//>`}${c && html`<${Pill} status=${c.status}>${c.status === 'paid' ? 'оплачено' : c.status === 'skip' ? 'пауза' : c.paid > 0 ? `оплачено ${money(c.paid)}` : dueText(c.due)}<//>`}</div><div class="row-sub">${c && c.custom ? `обычная цена ${money(c.base)} · ` : ''}нажмите, чтобы поставить другую сумму только на этот месяц</div></div><button class="btn sm" onClick=${(e) => { e.stopPropagation(); open('chargeForm', { id, ym: d.ym }); }}><${Icon} name="edit" cls="s" />Изменить</button></div></div>`; })()}
       ${months.length > 0 && html`<div><div class="sec-title">По месяцам</div><div class="months" ref=${strip}>${months.map((c) => html`<button class=${cx('mon', c.status)} data-cur=${c.ym === d.ym ? '1' : null} title=${`${C.ymLong(c.ym)}: срок ${C.fmtDate(c.due)}`} onClick=${(e) => chargeMenu(e, s, L, c, true)}><small>${C.ymShort(c.ym)}</small><b>${c.status === 'skip' ? '—' : c.paid > 0 && c.rest > 0 ? `${short(c.paid)}/${short(c.amount)}` : money(c.amount)}</b>${c.status === 'paid' ? html`<${Icon} name="check" />` : c.status === 'overdue' ? html`<${Icon} name="alert" />` : c.status === 'skip' ? html`<${Icon} name="pause" />` : html`<${Icon} name="clock" />`}</button>`)}</div></div>`}
       ${extras.length > 0 && html`<div><div class="sec-title">Доп. начисления</div><div class="card flush"><div class="rows">${extras.map((c) => html`<div class="row"><div class="row-main"><div class="row-title"><span>${c.label}</span><${Pill} status=${c.status}>${c.status === 'paid' ? 'оплачено' : dueText(c.due)}<//></div><div class="row-sub">${C.fmtDate(c.due)}</div></div><span class="row-amount">${money(c.amount)}</span><button class="btn sm ghost icon" aria-label="Удалить" onClick=${() => act.removeExtra(id, c.id)}><${Icon} name="x" /></button></div>`)}</div></div></div>`}
       <div><div class="sec-title">Оплаты · ${pays.length}${pays.length ? ` · всего ${money(L.paid)}` : ''}</div>
@@ -180,3 +182,60 @@ function StudentSheetI({ id, close }) {
 }
 export const StudentSheet = guard('students', StudentSheetI);
 sheets.student = StudentSheet;
+
+// ---------- Перевод в другую группу ----------
+function MoveSheetI({ ids, fromGroup, close }) {
+  const st = S(), d = getDerived();
+  const src = fromGroup ? byId(st.groups, fromGroup) : null;
+  const pool = fromGroup ? st.students.filter((s) => s.groupId === fromGroup && !s.archived).sort((a, b) => a.name.localeCompare(b.name, 'ru')) : (ids || []).map((id) => byId(st.students, id)).filter(Boolean);
+  const [sel, setSel] = useState(() => Object.fromEntries(pool.map((s) => [s.id, !fromGroup])));
+  const curGroups = new Set(pool.map((s) => s.groupId || ''));
+  const targets = st.groups.filter((g) => !g.archived && d.inProject(g) && !(curGroups.size === 1 && curGroups.has(g.id))).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  const [to, setTo] = useState(targets[0] ? targets[0].id : '');
+  const chosen = pool.filter((s) => sel[s.id]);
+  const g = byId(st.groups, to);
+  const firstFree = chosen.length === 1 && chosen[0].payType !== 'package' ? C.firstUnpaidYm(d.student(chosen[0].id), d.ym) : d.ym;
+  const [price, setPrice] = useState('group');
+  const [from, setFrom] = useState(firstFree);
+  const priceDiff = g && g.payType !== 'package' && chosen.some((s) => s.payType !== 'package' && Number((C.rateAt(s.rates, from) || {}).price) !== g.price);
+  const tNew = g ? byId(st.teachers, g.teacherId) : null;
+  const tOld = [...new Set(chosen.map((s) => (byId(st.groups, s.groupId) || {}).teacherId || s.teacherId).filter(Boolean))].map((id) => (byId(st.teachers, id) || {}).name).filter(Boolean);
+  const submit = () => { if (!chosen.length || (to && !g)) return; close(); act.moveStudents(chosen.map((s) => s.id), to, { price: priceDiff ? price : 'keep', from }); };
+  return html`<${Sheet} title=${chosen.length === 1 && !fromGroup ? `${chosen[0].name}: в другую группу` : `Перевести учеников${src ? ' из ' + src.name : ''}`} cls="narrow" onClose=${close} onSubmit=${submit}
+    foot=${html`<button type="button" class="btn" onClick=${close}>Отмена</button><button type="submit" class="btn primary" disabled=${!chosen.length}>Перевести${chosen.length > 1 ? ' · ' + chosen.length : ''}</button>`}>
+    <div class="stack" style="gap:14px">
+      ${fromGroup && html`<div><div class="spread" style="margin-bottom:6px"><span class="small muted">Кого переводим</span><button type="button" class="btn sm ghost" onClick=${() => setSel(Object.fromEntries(pool.map((s) => [s.id, !chosen.length || chosen.length < pool.length])))}>${chosen.length === pool.length ? 'Снять все' : 'Выбрать всех'}</button></div>
+        <div class="pick">${pool.map((s) => html`<label class="row tap" key=${s.id}><input type="checkbox" checked=${!!sel[s.id]} onChange=${(e) => setSel({ ...sel, [s.id]: e.target.checked })} style="width:18px;height:18px;accent-color:var(--accent)" /><div class="row-main"><div class="row-title"><span>${s.name}</span></div><div class="row-sub">${money(Number((C.rateAt(s.rates, d.ym) || {}).price) || 0)} в месяц</div></div></label>`)}</div></div>`}
+      <div class="field"><label for="mv-to">В группу</label><select id="mv-to" class="input" value=${to} onChange=${(e) => setTo(e.target.value)}>${targets.map((x) => html`<option value=${x.id} selected=${x.id === to}>${x.name}${x.price ? ` · ${money(x.price)}` : ''}</option>`)}${!curGroups.has('') && html`<option value="" selected=${to === ''}>Индивидуально (без группы)</option>`}</select></div>
+      ${priceDiff && html`<div class="field"><label>Цена</label><${Seg} value=${price} onChange=${setPrice} options=${[['group', `Как в группе · ${money(g.price)}`], ['keep', 'Оставить прежнюю']]} /></div>`}
+      ${priceDiff && price === 'group' && html`<div class="field"><label for="mv-from">Новая цена с месяца</label><select id="mv-from" class="input" value=${from} onChange=${(e) => setFrom(e.target.value)}>${monthOptions(C.ymAdd(d.ym, -3), C.ymAdd(d.ym, 3), d.ym).map(([ym, l]) => html`<option value=${ym} selected=${ym === from}>${l}</option>`)}</select><div class="hint">Уже оплаченные месяцы останутся по прежней цене. День оплаты станет как в группе — ${g.payDay}-го.</div></div>`}
+      ${g && html`<div class="preview"><span><b>Преподаватель:</b> ${tNew && tOld.length === 1 && tOld[0] === tNew.name ? `${tNew.name} (не меняется)` : `${tOld.length ? tOld.join(', ') + ' → ' : ''}${tNew ? tNew.name : 'не указан'}`}</span><span class="small muted">История оплат ученика сохранится. Уже начисленные выплаты преподавателям не меняются.</span></div>`}
+    </div>
+  <//>`;
+}
+
+// ---------- Суммы за месяц сразу для нескольких учеников ----------
+function MonthAmountsI({ groupId, ids, ym: ym0, close }) {
+  const st = S(), d = getDerived();
+  const [ym, setYm] = useState(ym0 || d.ym);
+  const g = groupId ? byId(st.groups, groupId) : null;
+  const list = (g ? st.students.filter((s) => s.groupId === g.id && !s.archived) : (ids || []).map((id) => byId(st.students, id)).filter(Boolean)).filter((s) => s.payType !== 'package').sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  const rows = useMemo(() => list.map((s) => { const L = C.studentLedger(s, d.idx.studentPays(s.id), { today: d.today, remindDays: d.remindDays, toYm: ym > d.ym ? ym : d.ym }); const c = L.charges.find((x) => x.key === 'm:' + ym); return { s, c, base: c ? c.base : Number((C.rateAt(s.rates, ym) || {}).price) || 0 }; }), [ym, d]);
+  const [vals, setVals] = useState({});
+  const val = (r) => (vals[r.s.id + ym] != null ? vals[r.s.id + ym] : r.c ? String(r.c.amount) : '');
+  const changes = rows.filter((r) => { const v = vals[r.s.id + ym]; if (v == null) return false; const n = C.parseAmount(v); const cur = r.c ? r.c.amount : null; return String(v).trim() === '' ? r.c && r.c.custom : n != null && n >= 0 && n !== cur; });
+  const save = () => { if (!changes.length) return close(); close(); act.setMonthAmounts(ym, changes.map((r) => { const v = vals[r.s.id + ym]; const n = C.parseAmount(v); return { id: r.s.id, amount: String(v).trim() === '' ? null : r.c && n === r.base ? null : n }; })); };
+  const total = C.r2(rows.reduce((a, r) => a + (C.parseAmount(val(r)) || 0), 0));
+  return html`<${Sheet} title=${`Суммы за ${C.ymName(ym)}${g ? ' · ' + g.name : ''}`} cls="narrow" onClose=${close} onSubmit=${save}
+    foot=${html`<button type="button" class="btn" onClick=${close}>Отмена</button><button type="submit" class="btn primary">${changes.length ? `Сохранить · ${changes.length}` : 'Готово'}</button>`}>
+    <div class="stack" style="gap:12px">
+      <div class="spread"><button type="button" class="btn sm icon ghost" aria-label="Предыдущий месяц" onClick=${() => setYm(C.ymAdd(ym, -1))}><${Icon} name="left" /></button><b>${C.ymLong(ym)}</b><button type="button" class="btn sm icon ghost" aria-label="Следующий месяц" onClick=${() => setYm(C.ymAdd(ym, 1))}><${Icon} name="right" /></button></div>
+      <div class="hint">Сумма только за этот месяц: скидка, неполный месяц, перенос занятий. Обычная цена в другие месяцы не меняется. 0 — за этот месяц не платит; пустое поле — обычная цена.</div>
+      ${rows.length ? html`<div class="card flush"><div class="rows">${rows.map((r) => html`<div class="row" key=${r.s.id + ym}><div class="row-main"><div class="row-title"><span>${r.s.name}</span>${r.c && r.c.custom && html`<${Pill} status="muted">своя<//>`}</div><div class="row-sub">${r.c ? `обычно ${money(r.base)}${r.c.paid > 0 ? ` · оплачено ${money(r.c.paid)}` : ''}` : 'в этом месяце не начисляется'}</div></div>
+        <input class="input sm num" style="width:110px;text-align:right" inputmode="decimal" aria-label=${`Сумма за ${C.ymName(ym)}: ${r.s.name}`} placeholder=${r.c ? '' : '—'} value=${val(r)} onInput=${(e) => setVals({ ...vals, [r.s.id + ym]: e.target.value })} /></div>`)}</div>
+        <div class="card-foot" style="justify-content:space-between"><span class="hint">${rows.length} ${C.plural(rows.length, 'ученик', 'ученика', 'учеников')}</span><span class="small">итого <b>${money(total)}</b></span></div></div>` : html`<div class="hint">Учеников с помесячной оплатой нет.</div>`}
+    </div>
+  <//>`;
+}
+export const MoveSheet = MoveSheetI, MonthAmounts = MonthAmountsI;
+sheets.moveStudents = MoveSheet; sheets.monthAmounts = MonthAmounts;

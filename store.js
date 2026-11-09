@@ -121,6 +121,9 @@ export function normalize(raw) {
       payType: ['salary', 'perLesson', 'perGroup'].includes(t.payType) ? t.payType : 'salary', payDay: clampDay(t.payDay), startYm, rates: rates.length ? rates : [{ from: startYm, amount: 0 }], lessons,
       // уже заработанное по группам, ученикам и схемам, которые с тех пор изменились (см. keepAccrued)
       frozen: (Array.isArray(t.frozen) ? t.frozen : []).filter((f) => f && isYm(f.ym) && isISO(f.due) && num(f.amount) > 0).map((f) => ({ id: str(f.id) || uid(), ym: f.ym, due: fixDate(f.due), amount: r2(num(f.amount)), label: str(f.label) })),
+      // премии и разовые выплаты; своя сумма за отдельный месяц по ключу начисления
+      extras: (Array.isArray(t.extras) ? t.extras : []).filter((x) => x && isISO(x.due) && num(x.amount) > 0).map((x) => ({ id: str(x.id) || uid(), due: fixDate(x.due), ym: isYm(x.ym) ? x.ym : ymOf(x.due), amount: r2(num(x.amount)), label: str(x.label) })),
+      adj: Object.fromEntries(Object.entries(obj(t.adj)).filter(([k, v]) => /^[a-z]{1,4}:[\w:-]{1,80}$/i.test(k) && v != null && Number.isFinite(Number(v))).map(([k, v]) => [k, Math.max(0, r2(num(v)))])),
     };
     if (o.archived) o.archivedAt = isISO(t.archivedAt) ? t.archivedAt : today();
     if (str(t.sourceId)) o.sourceId = str(t.sourceId);
@@ -236,7 +239,7 @@ export function importAny(file) {
 const memory = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, removeItem: (k) => { m.delete(k); }, key: (i) => [...m.keys()][i] ?? null, get length() { return m.size; } }; };
 const listeners = new Set();
 export const KEY_BROKEN = KEY + ':broken';
-export const defaultUI = () => ({ project: 'all', studentsView: 'list', studentsFilter: 'all', studentsGroup: 'all', studentsSort: 'status', financeTab: 'summary', financeRange: 6, journalKind: 'all', matrixEnd: null, calMonth: null, dismissed: {} });
+export const defaultUI = () => ({ project: 'all', studentsView: 'list', studentsFilter: 'all', studentsGroup: 'all', studentsSort: 'status', financeTab: 'month', financeRange: 6, payrollTab: 'due', payrollEnd: null, journalKind: 'all', matrixEnd: null, calMonth: null, dismissed: {} });
 /** Настройки вида не должны ломать экран: неверные типы сбрасываются, фильтр по удалённому проекту или группе снимается. */
 function cleanUI(ui, st) {
   const d = defaultUI();
@@ -750,6 +753,87 @@ export const act = {
     const t = byId(store.state.teachers, id); if (!t) return;
     const n = Math.max(0, num(t.lessons[ym]) + delta); if (n === num(t.lessons[ym])) return;
     store.commit(`${t.name}: ${delta > 0 ? '+1 занятие' : '−1 занятие'}`, (st) => { const x = byId(st.teachers, id); if (n) x.lessons[ym] = n; else delete x.lessons[ym]; });
+  },
+  /** Выплата за конкретные начисления: items = [{ key, label, ym, amount }]. Лишнее сверх них — аванс. */
+  payTeacherLines(id, items, v = {}) {
+    const t = byId(store.state.teachers, id); if (!t) return null;
+    const covers = (items || []).map((x) => ({ key: str(x.key), label: str(x.label), ym: isYm(x.ym) ? x.ym : '', amount: r2(Math.abs(num(x.amount))) })).filter((x) => x.key && x.amount > 0);
+    const amount = r2(Math.abs(num(v.amount != null ? v.amount : covers.reduce((a, x) => a + x.amount, 0)))); if (!amount) return null;
+    let pool = amount; for (const c of covers) { c.amount = r2(Math.min(c.amount, pool)); pool = r2(pool - c.amount); }
+    return this.payTeacher(id, { ...v, amount, covers: covers.filter((c) => c.amount > 0), advance: pool });
+  },
+  /** Своя сумма начисления преподавателю за месяц: число — своя сумма, 0 — не платить, null — вернуть обычную. */
+  setTeacherAdj(id, key, amount, label) {
+    const t = byId(store.state.teachers, id); if (!t || !key) return;
+    if (amount != null && !Number.isFinite(Number(amount))) return;
+    store.commit(amount == null ? `${t.name}: обычная сумма${label ? ' — ' + label : ''}` : num(amount) === 0 ? `${t.name}: не платить${label ? ' — ' + label : ''}` : `${t.name}: ${label ? label + ' — ' : ''}${money(num(amount))}`, (st) => {
+      const x = byId(st.teachers, id); x.adj = x.adj || {};
+      if (amount == null) delete x.adj[key]; else x.adj[key] = Math.max(0, r2(num(amount)));
+    });
+  },
+  addTeacherExtra(id, v) {
+    const t = byId(store.state.teachers, id); if (!t) return;
+    const amount = r2(Math.abs(num(v.amount))); if (!amount) return;
+    const due = dateOr(v.due);
+    store.commit(`${t.name}: ${trimmed(v.label) || 'премия'} ${money(amount)}`, (st) => { const x = byId(st.teachers, id); x.extras = x.extras || []; x.extras.push({ id: uid(), due, ym: isYm(v.ym) ? v.ym : ymOf(due), amount, label: trimmed(v.label) || 'Премия' }); });
+  },
+  removeTeacherExtra(id, extraId) {
+    const t = byId(store.state.teachers, id); if (!t) return;
+    store.commit(`${t.name}: разовая выплата убрана`, (st) => { const x = byId(st.teachers, id); x.extras = (x.extras || []).filter((e) => e.id !== extraId); });
+  },
+  /** Ставка преподавателю за группу или индивидуального ученика: { amount, when, payDay, from }. from — с какого месяца новая сумма. */
+  setSourcePay(kind, refId, d) {
+    const list = kind === 'group' ? store.state.groups : store.state.students;
+    const x0 = byId(list, refId); if (!x0) return;
+    store.commit(`${x0.name}: оплата преподавателю ${money(num(d.amount))}`, (st) => {
+      const x = byId(kind === 'group' ? st.groups : st.students, refId);
+      x.pay = mergePay(x.pay, { mode: 'fixed', amount: d.amount, when: d.when, payDay: d.payDay, from: d.from, fromChanged: !!d.restart, changed: true }, x.payDay, false);
+    });
+  },
+  /** Оклад или ставка за занятие с месяца from. */
+  setTeacherRate(id, d) {
+    const t = byId(store.state.teachers, id); if (!t) return;
+    store.commit(`${t.name}: ${t.payType === 'perLesson' ? 'ставка за занятие' : 'оклад'} ${money(num(d.amount))}`, (st) => {
+      const x = byId(st.teachers, id); const from = isYm(d.from) ? d.from : ymOf(today());
+      x.rates = setRate(x.rates, from, { amount: Math.max(0, num(d.amount)) });
+      if (from < x.startYm) x.startYm = from;
+      if (d.payDay) x.payDay = clampDay(d.payDay);
+    });
+  },
+  /** Перевести учеников в другую группу (groupId = '' — индивидуально). price: 'keep' — оставить свою цену, 'group' — цена новой группы с месяца from. */
+  moveStudents(ids, groupId, opt = {}) {
+    const st0 = store.state;
+    const g0 = groupId ? byId(st0.groups, groupId) : null;
+    if (groupId && !g0) return;
+    const list = (ids || []).map((id) => byId(st0.students, id)).filter((s) => s && (s.groupId || '') !== (groupId || ''));
+    if (!list.length) return;
+    const soloTeachers = list.filter((s) => !s.groupId && s.teacherId).map((s) => s.teacherId);
+    const label = list.length === 1 ? `${list[0].name} → ${g0 ? g0.name : 'индивидуально'}` : `${list.length} ${list.length < 5 ? 'ученика' : 'учеников'} → ${g0 ? g0.name : 'индивидуально'}`;
+    store.commit(label, (st) => keepAccrued(st, soloTeachers, () => {
+      const g = groupId ? byId(st.groups, groupId) : null;
+      const from = isYm(opt.from) ? opt.from : ymOf(today());
+      for (const s0 of list) {
+        const s = byId(st.students, s0.id);
+        s.groupId = g ? g.id : '';
+        if (g) { s.projectId = g.projectId; if (g.teacherId) s.teacherId = g.teacherId; if (g.subject && !s.subject) s.subject = g.subject; s.pay = null; }
+        else if (!s.pay) s.pay = { payDay: s.payDay, when: 'end', rates: [] };
+        if (g && opt.price === 'group' && s.payType !== 'package') {
+          s.rates = setRate(s.rates, from < s.startYm ? s.startYm : from, { price: g.price });
+          if (opt.payDay !== false) s.payDay = g.payDay;
+          s.every = g.every || 1;
+        }
+      }
+    }));
+  },
+  /** Суммы за месяц сразу для нескольких учеников: [{ id, amount }] — число или null (обычная цена). */
+  setMonthAmounts(ym, items) {
+    if (!isYm(ym)) return;
+    const st0 = store.state;
+    const list = (items || []).filter((x) => byId(st0.students, x.id) && (x.amount == null || Number.isFinite(Number(x.amount))));
+    if (!list.length) return;
+    store.commit(`Суммы за ${ymName(ym)}: ${list.length} ${list.length === 1 ? 'ученик' : list.length < 5 ? 'ученика' : 'учеников'}`, (st) => {
+      for (const it of list) { const s = byId(st.students, it.id); if (it.amount == null) delete s.overrides[ym]; else s.overrides[ym] = Math.max(0, r2(num(it.amount))); }
+    });
   },
   /** Убрать сохранённое («замороженное») начисление, если оно не нужно. */
   removeFrozen(id, frozenId) {

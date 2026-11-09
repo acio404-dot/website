@@ -334,6 +334,11 @@ export function teacherLines(t, state, idx, toYm) {
   const out = stop ? lines.filter((c) => c.due <= stop || c.src === 'lessons') : lines;
   // «замороженные» начисления: уже заработанное по группам, ученикам и схемам, которые с тех пор изменились или удалены
   for (const f of t.frozen || []) if (isYm(f.ym) && isISO(f.due) && Number(f.amount) > 0) out.push({ key: 'f:' + f.id, ym: f.ym, due: f.due, amount: Number(f.amount), src: 'frozen', frozenId: f.id, label: f.label || 'Начисление' });
+  // премии и разовые выплаты
+  for (const x of t.extras || []) if (isISO(x.due) && ymOf(x.due) <= toYm && Number(x.amount) > 0) out.push({ key: 'x:' + x.id, ym: isYm(x.ym) ? x.ym : ymOf(x.due), due: x.due, amount: Number(x.amount), src: 'extra', extraId: x.id, label: x.label || 'Премия' });
+  // своя сумма за конкретный месяц (0 — за этот месяц не платим)
+  const adj = t.adj || {};
+  for (const c of out) if (adj[c.key] != null) { c.base = c.amount; c.amount = Math.max(0, Number(adj[c.key]) || 0); c.custom = true; }
   out.sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : a.label !== b.label ? String(a.label).localeCompare(String(b.label), 'ru') : a.key < b.key ? -1 : 1));
   return out;
 }
@@ -342,23 +347,27 @@ export function teacherLedger(t, state, idx, opt = {}) {
   const remind = opt.remindDays ?? 3;
   const toYm = ymMax(ymOf(tday), ymOf(addDays(tday, remind)), opt.toYm);
   const lines = teacherLines(t, state, idx, toYm);
-  const paid = r2(idx.teacherPays(t.id).reduce((a, p) => a + (Number(p.amount) || 0), 0));
-  let pool = paid;
+  const pays = idx.teacherPays(t.id);
+  const paid = r2(pays.reduce((a, p) => a + (Number(p.amount) || 0), 0));
+  // выплата за конкретную строку закрывает именно её; остальное — от старых начислений к новым
+  const al = allocatePayouts(lines, pays);
+  let pool = 0;
+  for (const v of al.byPay.values()) pool = r2(pool + v.advance);
   for (const c of lines) {
-    c.paid = r2(Math.min(c.amount, pool));
-    pool = r2(pool - c.paid);
-    c.rest = r2(c.amount - c.paid);
-    c.status = c.rest <= 0 ? 'paid' : dueStatus(c.due, tday, remind);
+    c.paid = r2(c.amount - al.rest.get(c.key));
+    c.rest = al.rest.get(c.key);
+    c.pays = al.byLine.get(c.key) || [];
+    c.status = c.amount <= 0 ? 'skip' : c.rest <= 0 ? 'paid' : dueStatus(c.due, tday, remind);
   }
   const open = lines.filter((c) => c.rest > 0);
   const due = open.filter((c) => c.status !== 'later');
   let next = open[0] || null;
-  if (!next && !t.archived) {
+  if (!next && !t.archived && !opt.noAhead) {
     // всё выплачено — заглядываем на два месяца вперёд, чтобы показать ближайшую выплату (в lines она не попадает)
     const have = new Set(lines.map((c) => c.key));
     let ahead = pool;
     for (const c of teacherLines(t, state, idx, ymAdd(toYm, 2))) {
-      if (have.has(c.key)) continue;
+      if (have.has(c.key) || !(c.amount > 0)) continue;
       const p = r2(Math.min(c.amount, ahead)); ahead = r2(ahead - p);
       if (c.amount - p > 0) { next = { ...c, paid: p, rest: r2(c.amount - p), status: 'later' }; break; }
     }
@@ -375,25 +384,41 @@ export function teacherLedger(t, state, idx, opt = {}) {
     Возвращает byPay: id выплаты → { parts: [{ key, label, ym, amount }], advance }, и byLine: ключ начисления → [{ payId, date, amount }]. */
 export function allocatePayouts(lines, pays) {
   const sorted = (pays || []).slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.createdAt || 0) - (b.createdAt || 0)));
+  const rest = new Map(lines.map((c) => [c.key, r2(Math.max(0, Number(c.amount) || 0))]));
+  const byKey = new Map(lines.map((c) => [c.key, c]));
   const byPay = new Map(), byLine = new Map();
-  let li = 0, lineRest = lines.length ? r2(lines[0].amount) : 0;
+  const take = (p, c, amount, parts) => {
+    parts.push({ key: c.key, label: c.label, ym: c.ym, amount });
+    if (!byLine.has(c.key)) byLine.set(c.key, []);
+    byLine.get(c.key).push({ payId: p.id, date: p.date, amount });
+    rest.set(c.key, r2(rest.get(c.key) - amount));
+  };
+  // 1) выплаты за конкретные начисления (записано при выплате)
+  const left = [];
   for (const p of sorted) {
     let pool = r2(Number(p.amount) || 0);
     const parts = [];
-    while (pool > 0 && li < lines.length) {
-      const take = r2(Math.min(pool, lineRest));
-      if (take > 0) {
-        parts.push({ key: lines[li].key, label: lines[li].label, ym: lines[li].ym, amount: take });
-        if (!byLine.has(lines[li].key)) byLine.set(lines[li].key, []);
-        byLine.get(lines[li].key).push({ payId: p.id, date: p.date, amount: take });
-        pool = r2(pool - take); lineRest = r2(lineRest - take);
-      }
-      if (lineRest <= 0) { li++; lineRest = li < lines.length ? r2(lines[li].amount) : 0; }
+    for (const cv of p.covers || []) {
+      const c = byKey.get(cv.key); if (!c || pool <= 0) continue;
+      const a = r2(Math.min(pool, Number(cv.amount) || 0, rest.get(c.key)));
+      if (a > 0) { take(p, c, a, parts); pool = r2(pool - a); }
     }
-    byPay.set(p.id, { parts, advance: pool });
+    left.push({ p, pool, parts });
   }
-  return { byPay, byLine };
+  // 2) всё остальное — от старых начислений к новым
+  for (const x of left) {
+    for (const c of lines) {
+      if (x.pool <= 0) break;
+      const r = rest.get(c.key); if (!(r > 0)) continue;
+      const a = r2(Math.min(x.pool, r));
+      take(x.p, c, a, x.parts); x.pool = r2(x.pool - a);
+    }
+    byPay.set(x.p.id, { parts: x.parts, advance: x.pool });
+  }
+  return { byPay, byLine, rest };
 }
+/** Источник начисления без месяца: «g:<id>», «s:<id>», «sal», «les», «x» (премии), «f» (начислено ранее). */
+export const lineSource = (c) => (c.src === 'group' ? 'g:' + c.refId : c.src === 'student' ? 's:' + c.refId : c.src === 'salary' ? 'sal' : c.src === 'lessons' ? 'les' : c.src === 'extra' ? 'x' : 'f');
 /** «за октябрь: Group #1 $300, Group J1 $150; аванс $50» */
 export function coversText(parts, advance, money) {
   const byYm = new Map();

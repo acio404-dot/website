@@ -7,7 +7,8 @@ import './forms.js';
 import { QuickAdd, Palette } from './quick.js';
 import { Home, backupNow } from './home.js';
 import { Students } from './students.js';
-import { Groups, Teachers } from './groups.js';
+import { Groups } from './groups.js';
+import { Payroll } from './payroll.js';
 import { Finance } from './finance.js';
 import { Calendar } from './calendar.js';
 import { Settings } from './settings.js';
@@ -18,7 +19,7 @@ const PAGES = {
   home: { title: 'Обзор', icon: 'home', view: Home },
   students: { title: 'Ученики', icon: 'users', view: Students },
   groups: { title: 'Группы', icon: 'layers', view: Groups },
-  teachers: { title: 'Преподаватели', icon: 'cap', view: Teachers },
+  teachers: { title: 'Зарплаты', icon: 'cap', view: Payroll },
   finance: { title: 'Финансы', icon: 'chart', view: Finance },
   calendar: { title: 'Календарь', icon: 'calendar', view: Calendar },
   settings: { title: 'Настройки', icon: 'settings', view: Settings },

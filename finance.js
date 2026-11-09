@@ -2,7 +2,9 @@
 import { html, useState, useMemo } from './vendor.js';
 import { store, act } from './store.js';
 import * as C from './core.js';
-import { money, moneyBig, cx, Icon, Avatar, Pill, Empty, Seg, SearchInput, HBars, getDerived, open, openMenu, download, toCSV, dueText, toast, tap } from './ui.js';
+import { money, moneyBig, cx, Icon, Avatar, Pill, Empty, Seg, SearchInput, HBars, Meter, getDerived, open, go, openMenu, download, toCSV, dueText, toast, tap } from './ui.js';
+import { quickPay } from './quick.js';
+import { lineMenu } from './payroll.js';
 import { CashflowCard, PaymentRow } from './home.js';
 import { quickRecurring } from './quick.js';
 
@@ -98,10 +100,71 @@ function Recurring({ d }) {
   </div>`;
 }
 
-export function Finance() {
-  const d = getDerived(), tab = store.ui.financeTab || 'summary';
+// ---------- Месяц: план и факт ----------
+function MonthView({ d }) {
+  const st = S();
+  const [ym, setYm] = useState(d.ym);
+  const o = { today: d.today, remindDays: d.remindDays };
+  const data = useMemo(() => {
+    const col = C.collection(st, d, ym);
+    const unpaid = d.activeStudents.filter((s) => s.payType !== 'package').map((s) => {
+      const L0 = d.student(s.id); const L = ym > L0.toYm ? C.studentLedger(s, d.idx.studentPays(s.id), { ...o, toYm: ym }) : L0;
+      const c = L.charges.find((x) => x.key === 'm:' + ym); return c && c.rest > 0 ? { s, c } : null;
+    }).filter(Boolean).sort((a, b) => C.STATUS_ORDER[a.c.status] - C.STATUS_ORDER[b.c.status] || a.s.name.localeCompare(b.s.name, 'ru'));
+    const pay = d.activeTeachers.flatMap((t) => { const L = C.teacherLedger(t, st, d.idx, { ...o, toYm: ym > d.ym ? ym : d.ym, noAhead: true }); return L.lines.filter((c) => C.ymOf(c.due) === ym && c.amount > 0).map((c) => ({ t, c })); }).sort((a, b) => (a.c.due < b.c.due ? -1 : 1));
+    const rec = d.activeRecurring.map((r) => { const L = C.recurringLedger(r, d.idx, { ...o, toYm: ym }); const it = L.items.find((i) => i.ym === ym); return it && it.status !== 'skip' ? { r, it } : null; }).filter(Boolean);
+    const ps = d.payments.filter((p) => C.ymOf(p.date) === ym);
+    const fact = { inc: C.r2(ps.filter(C.isIn).reduce((a, p) => a + p.amount, 0)), sal: C.r2(ps.filter((p) => p.kind === 'salary').reduce((a, p) => a + p.amount, 0)), rec: C.r2(ps.filter((p) => p.recurringId).reduce((a, p) => a + p.amount, 0)) };
+    fact.other = C.r2(ps.filter((p) => !C.isIn(p) && p.kind !== 'salary' && !p.recurringId).reduce((a, p) => a + p.amount, 0));
+    fact.net = C.r2(fact.inc - fact.sal - fact.rec - fact.other);
+    const plan = { inc: col.expected, sal: C.r2(pay.reduce((a, x) => a + x.c.amount, 0)), rec: C.r2(rec.reduce((a, x) => a + x.it.amount, 0)) };
+    plan.net = C.r2(plan.inc - plan.sal - plan.rec - fact.other);
+    return { col, unpaid, pay, rec, fact, plan, salPaid: C.r2(pay.reduce((a, x) => a + x.c.paid, 0)) };
+  }, [d, ym]);
+  const { col, unpaid, pay, rec, fact, plan, salPaid } = data;
+  const isCur = ym === d.ym, past = ym < d.ym;
+  const recRest = C.r2(rec.filter((x) => x.it.status !== 'paid').reduce((a, x) => a + x.it.amount, 0));
+  const tr = (label, p, f, neg, bold) => html`<tr class=${bold ? 'sec' : ''}><td>${label}</td><td class="num">${p == null ? '—' : money(neg ? -p : p)}</td><td class="num">${money(neg ? -f : f)}</td><td class="num">${p == null ? '' : money(neg ? -(f - p) : f - p)}</td></tr>`;
   return html`<div class="stack">
-    <${Seg} value=${tab} onChange=${(x) => store.setUI({ financeTab: x })} options=${[['summary', 'Сводка', 'chart'], ['journal', 'Журнал', 'list'], ['recurring', 'Подписки', 'repeat']]} />
-    ${tab === 'journal' ? html`<${Journal} d=${d} />` : tab === 'recurring' ? html`<${Recurring} d=${d} />` : html`<${Summary} d=${d} />`}
+    <div class="page-tools" style="margin-bottom:0"><div class="toolbar"><button class="btn icon" aria-label="Предыдущий месяц" onClick=${() => setYm(C.ymAdd(ym, -1))}><${Icon} name="left" /></button><b style="min-width:150px;text-align:center;font-size:17px">${C.ymLong(ym)}</b><button class="btn icon" aria-label="Следующий месяц" onClick=${() => setYm(C.ymAdd(ym, 1))}><${Icon} name="right" /></button>${!isCur && html`<button class="btn sm ghost" onClick=${() => setYm(d.ym)}>Текущий</button>`}</div></div>
+    <div class="kpis k4">
+      <div class="kpi"><span class="kpi-label"><span class="dot in"></span>От учеников</span><span class="kpi-value">${moneyBig(col.collected)}</span><span class="kpi-sub">из ${money(col.expected)} начисленных · ${col.paidCount}/${col.count}</span></div>
+      <div class="kpi"><span class="kpi-label"><span class="dot out"></span>Зарплаты за ${C.ymName(ym)}</span><span class="kpi-value">${moneyBig(salPaid)}</span><span class="kpi-sub">выплачено из ${money(plan.sal)} по графику</span></div>
+      <div class="kpi"><span class="kpi-label">Подписки</span><span class="kpi-value">${moneyBig(C.r2(plan.rec - recRest))}</span><span class="kpi-sub">${recRest > 0 ? `ещё ${money(recRest)} к оплате` : `всего ${money(plan.rec)}`}</span></div>
+      <div class="kpi"><span class="kpi-label">Прибыль</span><span class=${cx('kpi-value', (past ? fact.net : plan.net) < 0 && 'neg')}>${moneyBig(past ? fact.net : plan.net)}</span><span class="kpi-sub">${past ? `план был ${money(plan.net)}` : `если всё оплатят · сейчас ${money(fact.net)}`}</span></div>
+    </div>
+    <div class="cols even">
+      <section class="card flush"><div class="card-head"><div><h2>Ученики</h2><div class="hint">начислено за ${C.ymName(ym)} и сколько уже оплачено</div></div><span class="small num"><b>${money(col.collected)}</b> из ${money(col.expected)}</span></div>
+        <div style="padding:0 var(--pad) 10px"><${Meter} value=${col.collected} max=${col.expected || 1} /></div>
+        ${col.rows.map((r) => html`<button class="gmeter" key=${r.key} onClick=${() => (r.group ? open('group', { id: r.group.id }) : null)}><span class="small"><b>${r.label}</b><div class="hint">${r.paidCount}/${r.count} оплатили</div></span><${Meter} value=${r.collected} max=${r.expected || 1} /><span class="small num">${money(r.collected)} / ${money(r.expected)}</span></button>`)}
+        ${unpaid.length > 0 && html`<div class="row" style="background:var(--surface-2);padding-top:7px;padding-bottom:7px"><b class="small grow">Ещё не оплатили · ${unpaid.length}</b><span class="small num">${money(unpaid.reduce((a, x) => a + x.c.rest, 0))}</span></div>
+          <div class="rows">${unpaid.slice(0, 30).map(({ s, c }) => html`<div class="row tap" key=${s.id} ...${tap(() => open('student', { id: s.id }))}><div class="row-main"><div class="row-title"><span>${s.name}</span></div><div class="row-sub wrap"><${Pill} status=${c.status}>${c.status === 'later' ? C.fmtDate(c.due) : dueText(c.due)}<//> ${(S().groups.find((g) => g.id === s.groupId) || {}).name || 'индивидуально'}${c.custom ? ` · своя сумма (обычно ${money(c.base)})` : ''}${c.paid > 0 ? ` · оплачено ${money(c.paid)}` : ''}</div></div><span class="row-amount">${money(c.rest)}</span>
+            <div class="row-actions" onClick=${(e) => e.stopPropagation()}><button class="btn sm ghost icon" title="Сумма за месяц" aria-label="Изменить сумму за месяц" onClick=${() => open('chargeForm', { id: s.id, ym })}><${Icon} name="edit" /></button><button class="btn sm good" onClick=${() => quickPay(s.id)}><${Icon} name="check" cls="s" /><span class="only-wide">Оплатил</span></button></div></div>`)}</div>`}
+        ${!col.rows.length && html`<div class="card-foot"><span class="hint">За этот месяц ученикам ничего не начислено.</span></div>`}
+      </section>
+      <div class="stack">
+        <section class="card flush"><div class="card-head"><div><h2>Зарплаты</h2><div class="hint">выплаты со сроком в ${C.ymPrep(ym)}</div></div><button class="btn sm ghost" onClick=${() => { store.setUI({ payrollTab: 'due' }); go('teachers'); }}>Все<${Icon} name="right" cls="s" /></button></div>
+          ${pay.length ? html`<div class="rows">${pay.map(({ t, c }) => html`<div class="row tap" key=${t.id + c.key} ...${tap((e) => lineMenu(e, t, c))}><div class="row-main"><div class="row-title"><span>${t.name}</span><${Pill} status=${c.status}>${c.status === 'paid' ? 'выплачено' : c.status === 'later' ? C.fmtDate(c.due) : dueText(c.due)}<//></div><div class="row-sub">${c.src === 'extra' ? c.label : `${c.src === 'lessons' ? 'Занятия' : c.label} · за ${C.ymName(c.ym)}`}${c.custom ? ' · своя сумма' : ''}</div></div><span class="row-amount">${money(c.amount)}</span>${c.rest > 0 && html`<div class="row-actions" onClick=${(e) => e.stopPropagation()}><button class="btn sm good" onClick=${() => open('payout', { id: t.id, keys: [c.key] })}><${Icon} name="cash" cls="s" /><span class="only-wide">Выплатить</span></button></div>`}</div>`)}</div>
+            <div class="card-foot" style="justify-content:space-between"><span class="hint">выплачено ${money(salPaid)} из ${money(plan.sal)}</span></div>` : html`<div class="card-foot"><span class="hint">В этом месяце выплат по графику нет.</span></div>`}
+        </section>
+        <section class="card flush"><div class="card-head"><div><h2>Подписки</h2></div><button class="btn sm ghost" onClick=${() => store.setUI({ financeTab: 'recurring' })}>Все<${Icon} name="right" cls="s" /></button></div>
+          ${rec.length ? html`<div class="rows">${rec.map(({ r, it }) => html`<div class="row" key=${r.id}><div class="row-main"><div class="row-title"><span>${r.name}</span><${Pill} status=${it.status}>${it.status === 'paid' ? 'оплачено' : it.status === 'later' ? C.fmtDate(it.due) : dueText(it.due)}<//></div></div><span class="row-amount">${money(it.amount)}</span>${it.status !== 'paid' && html`<div class="row-actions"><button class="btn sm good" onClick=${() => quickRecurring(r.id, ym)}><${Icon} name="check" cls="s" /><span class="only-wide">Оплачено</span></button></div>`}</div>`)}</div>` : html`<div class="card-foot"><span class="hint">Подписок в этом месяце нет.</span></div>`}
+        </section>
+      </div>
+    </div>
+    <section class="card flush"><div class="card-head"><div><h2>Итог ${C.ymGen(ym)}</h2><div class="hint">план — по начислениям и графику, факт — по записанным оплатам с датой в этом месяце</div></div></div>
+      <div class="table-wrap"><table class="matrix"><thead><tr><th>Статья</th><th class="num">План</th><th class="num">Факт</th><th class="num">Разница</th></tr></thead><tbody>
+        ${tr('Доходы', plan.inc, fact.inc)}${tr('Зарплаты', plan.sal, fact.sal, true)}${tr('Подписки', plan.rec, fact.rec, true)}${tr('Прочие расходы', null, fact.other, true)}
+      </tbody><tfoot><tr><td>Прибыль</td><td class="num">${money(plan.net)}</td><td class="num" style=${fact.net < 0 ? 'color:var(--overdue)' : ''}>${money(fact.net)}</td><td class="num">${money(C.r2(fact.net - plan.net))}</td></tr></tfoot></table></div>
+      <div class="card-foot" style="justify-content:flex-start"><span class="hint">Факт может отличаться от плана: оплату за прошлый месяц внесли в этом, зарплату выдали раньше срока и т. п.</span></div>
+    </section>
+  </div>`;
+}
+
+export function Finance() {
+  const d = getDerived(), tab = store.ui.financeTab || 'month';
+  return html`<div class="stack">
+    <${Seg} value=${tab} onChange=${(x) => store.setUI({ financeTab: x })} options=${[['month', 'Месяц', 'calendar'], ['summary', 'По месяцам', 'chart'], ['journal', 'Журнал', 'list'], ['recurring', 'Подписки', 'repeat']]} />
+    ${tab === 'journal' ? html`<${Journal} d=${d} />` : tab === 'recurring' ? html`<${Recurring} d=${d} />` : tab === 'summary' ? html`<${Summary} d=${d} />` : html`<${MonthView} d=${d} />`}
   </div>`;
 }

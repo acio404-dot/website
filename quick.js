@@ -24,7 +24,7 @@ export function quickPay(id) {
   if (S().settings.quickPay && !L.package && L.due.length === 1) act.payStudent(id, { amount: L.due[0].rest });
   else openSheet(PaySheet, { id });
 }
-function DateChips({ value, onChange }) {
+export function DateChips({ value, onChange }) {
   const t = C.today(), y = C.addDays(t, -1);
   return html`<div class="quick">
     <button type="button" class=${cx('chip sm', value === t && 'is-active')} onClick=${() => onChange(t)}>Сегодня</button>
@@ -32,7 +32,7 @@ function DateChips({ value, onChange }) {
     <input class="input sm" type="date" style="width:auto;flex:1;min-width:140px" value=${value} min="2000-01-01" max=${C.addDays(t, 366)} onInput=${(e) => C.isSaneDate(e.target.value) && onChange(e.target.value)} aria-label="Дата" />
   </div>`;
 }
-function MethodChips({ value, onChange }) {
+export function MethodChips({ value, onChange }) {
   const m = S().settings.methods;
   if (!m.length) return null;
   return html`<div class="field span-2"><label>Способ оплаты</label><div class="quick">${m.map((x) => html`<button type="button" class=${cx('chip sm', value === x && 'is-active')} onClick=${() => onChange(value === x ? '' : x)}>${x}</button>`)}</div></div>`;
